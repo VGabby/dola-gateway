@@ -51,6 +51,18 @@ def test_runtime_builder_selects_the_fully_pinned_python_install(tmp_path):
     assert builder._select_one_directory(tmp_path, "cpython-3.13.7-") == pinned
 
 
+def test_windows_browser_version_check_does_not_launch_the_gui(monkeypatch, tmp_path):
+    builder = load_builder()
+
+    def unexpected_launch(*_args, **_kwargs):
+        raise AssertionError("Windows Chromium must not be launched with --version")
+
+    monkeypatch.setattr(builder.subprocess, "run", unexpected_launch)
+    builder._verify_reported_browser_version(
+        tmp_path / "chrome.exe", "windows-x64", "151.0.7922.34"
+    )
+
+
 def test_windows_installer_is_per_user_and_offline_capable():
     config = json.loads(
         (PROJECT_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(

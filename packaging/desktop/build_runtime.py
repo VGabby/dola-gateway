@@ -355,6 +355,19 @@ def _verify_native_binary(path: Path, target: str) -> None:
             raise BuildError(f"not a native Windows x64 executable: {path}")
 
 
+def _verify_reported_browser_version(browser: Path, target: str, expected: str) -> None:
+    # On Windows, chrome.exe --version starts the GUI process and can hang. Its
+    # pinned Patchright metadata, revision directory, PE header, and the later
+    # browser smoke test provide the corresponding verification without doing so.
+    if target == "windows-x64":
+        return
+    result = subprocess.run(
+        [str(browser), "--version"], capture_output=True, text=True, check=True, timeout=20
+    )
+    if expected not in (result.stdout + result.stderr):
+        raise BuildError(f"Chromium executable did not report expected version {expected}")
+
+
 def _install_production_runtime(stage: Path, target: str, spec: dict[str, Any]) -> dict[str, Any]:
     uv = _uv_binary()
     build_cache = stage / ".build"
@@ -455,13 +468,7 @@ def _install_production_runtime(stage: Path, target: str, spec: dict[str, Any]) 
 
     _verify_native_binary(interpreter, target)
     _verify_native_binary(browser, target)
-    browser_version_result = subprocess.run(
-        [str(browser), "--version"], capture_output=True, text=True, check=True, timeout=20
-    )
-    if chromium_version not in (browser_version_result.stdout + browser_version_result.stderr):
-        raise BuildError(
-            f"Chromium executable did not report expected version {chromium_version}"
-        )
+    _verify_reported_browser_version(browser, target, chromium_version)
 
     shutil.rmtree(build_cache)
     return {
