@@ -374,7 +374,7 @@ def _install_production_runtime(stage: Path, target: str, spec: dict[str, Any]) 
         [uv, "python", "install", "--managed-python", "--no-bin", "--install-dir", str(installs), python_version],
         env=environment,
     )
-    installed = _select_one_directory(installs, "cpython-")
+    installed = _select_one_directory(installs, f"cpython-{python_version}-")
     python_root = stage / "python"
     shutil.copytree(installed, python_root, symlinks=True)
     # uv marks its managed base interpreter as externally managed. This copy is

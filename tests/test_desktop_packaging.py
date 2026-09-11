@@ -41,6 +41,16 @@ def test_runtime_spec_is_exact_and_native_builds_are_restricted():
         builder.native_target("Linux", "x86_64", spec=spec)
 
 
+def test_runtime_builder_selects_the_fully_pinned_python_install(tmp_path):
+    builder = load_builder()
+    alias = tmp_path / "cpython-3.13-windows-x86_64-none"
+    pinned = tmp_path / "cpython-3.13.7-windows-x86_64-none"
+    alias.mkdir()
+    pinned.mkdir()
+
+    assert builder._select_one_directory(tmp_path, "cpython-3.13.7-") == pinned
+
+
 def test_windows_installer_is_per_user_and_offline_capable():
     config = json.loads(
         (PROJECT_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(
