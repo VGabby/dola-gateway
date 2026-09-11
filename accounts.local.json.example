@@ -1,0 +1,16 @@
+{
+  "accounts": [
+    {
+      "name": "dola-01",
+      "email": "first-account@example.com",
+      "enabled": true,
+      "note": "Primary image worker"
+    },
+    {
+      "name": "dola-02",
+      "email": "second-account@example.com",
+      "enabled": true,
+      "note": "Secondary image worker"
+    }
+  ]
+}

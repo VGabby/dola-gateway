@@ -40,6 +40,9 @@ class TaskStore:
                     duration INTEGER,
                     status TEXT,
                     video_url TEXT,
+                    image_url TEXT,
+                    media_type TEXT DEFAULT 'video',
+                    style TEXT,
                     error TEXT,
                     created_at REAL,
                     updated_at REAL,
@@ -52,13 +55,21 @@ class TaskStore:
                     api_key_name TEXT,
                     started_at REAL,
                     finished_at REAL,
-                    client_concurrency_limit INTEGER DEFAULT 0
+                    client_concurrency_limit INTEGER DEFAULT 0,
+                    idempotency_key TEXT,
+                    local_path TEXT,
+                    image_urls TEXT,
+                    local_paths TEXT,
+                    retry_account TEXT
                 )
                 """
             )
             # Legacy migration: add missing columns for task recovery, client usage, and timing stats.
             for column, definition in (
                 ("account", "TEXT"),
+                ("image_url", "TEXT"),
+                ("media_type", "TEXT DEFAULT 'video'"),
+                ("style", "TEXT"),
                 ("conversation_id", "TEXT"),
                 ("deadline_at", "REAL"),
                 ("last_poll_at", "REAL"),
@@ -69,11 +80,21 @@ class TaskStore:
                 ("started_at", "REAL"),
                 ("finished_at", "REAL"),
                 ("client_concurrency_limit", "INTEGER DEFAULT 0"),
+                ("idempotency_key", "TEXT"),
+                ("local_path", "TEXT"),
+                ("image_urls", "TEXT"),
+                ("local_paths", "TEXT"),
+                ("retry_account", "TEXT"),
             ):
                 try:
                     self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
                 except sqlite3.OperationalError:
                     pass
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency "
+                "ON tasks(COALESCE(api_key_hash, ''), media_type, idempotency_key) "
+                "WHERE idempotency_key IS NOT NULL"
+            )
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS api_keys (
@@ -153,9 +174,28 @@ class TaskStore:
         daily_limit=0,
         concurrency_limit=0,
         max_pending=0,
+        media_type="video",
+        style=None,
+        idempotency_key=None,
+        retry_account=None,
     ):
         now = time.time()
         with _LOCK:
+            if idempotency_key:
+                if api_key_hash:
+                    existing = self._conn.execute(
+                        "SELECT * FROM tasks WHERE api_key_hash=? AND media_type=? "
+                        "AND idempotency_key=?",
+                        (api_key_hash, media_type, idempotency_key),
+                    ).fetchone()
+                else:
+                    existing = self._conn.execute(
+                        "SELECT * FROM tasks WHERE api_key_hash IS NULL AND media_type=? "
+                        "AND idempotency_key=?",
+                        (media_type, idempotency_key),
+                    ).fetchone()
+                if existing:
+                    return dict(existing)
             if max_pending > 0:
                 pending = self._conn.execute(
                     "SELECT COUNT(*) FROM tasks WHERE status IN ('queued','processing')"
@@ -179,8 +219,9 @@ class TaskStore:
                 "INSERT INTO tasks ("
                 "id,model,prompt,ratio,duration,status,account,created_at,updated_at,"
                 "conversation_id,deadline_at,last_poll_at,failure_code,reference_images,"
-                "api_key_hash,api_key_name,started_at,finished_at,client_concurrency_limit"
-                ") VALUES (?,?,?,?,?,'queued',?,?,?,NULL,NULL,0,NULL,?,?,?,?,?,?)",
+                "api_key_hash,api_key_name,started_at,finished_at,client_concurrency_limit,"
+                "idempotency_key,retry_account"
+                ") VALUES (?,?,?,?,?,'queued',?,?,?,NULL,NULL,0,NULL,?,?,?,?,?,?,?,?)",
                 (
                     task_id,
                     model,
@@ -196,9 +237,37 @@ class TaskStore:
                     None,
                     None,
                     max(0, int(concurrency_limit or 0)),
+                    idempotency_key,
+                    retry_account,
                 ),
             )
+            self._conn.execute(
+                "UPDATE tasks SET media_type=?, style=? WHERE id=?",
+                (media_type, style, task_id),
+            )
             self._conn.commit()
+            return dict(self._conn.execute(
+                "SELECT * FROM tasks WHERE id=?", (task_id,)
+            ).fetchone())
+
+    def find_idempotent(
+        self, api_key_hash: str | None, media_type: str, idempotency_key: str | None
+    ):
+        if not idempotency_key:
+            return None
+        with _LOCK:
+            if api_key_hash:
+                row = self._conn.execute(
+                    "SELECT * FROM tasks WHERE api_key_hash=? AND media_type=? "
+                    "AND idempotency_key=?",
+                    (api_key_hash, media_type, idempotency_key),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT * FROM tasks WHERE api_key_hash IS NULL AND media_type=? "
+                    "AND idempotency_key=?", (media_type, idempotency_key),
+                ).fetchone()
+        return dict(row) if row else None
 
     def update(self, task_id, **fields):
         if not fields:
@@ -235,7 +304,9 @@ class TaskStore:
         with _LOCK:
             rows = self._conn.execute(
                 "SELECT * FROM tasks WHERE status IN ('queued','processing') "
+                "AND COALESCE(media_type,'video')='video' "
                 "AND conversation_id IS NOT NULL AND account IS NOT NULL "
+                "AND retry_account IS NULL "
                 "ORDER BY created_at"
             ).fetchall()
         return [dict(r) for r in rows]
@@ -245,9 +316,47 @@ class TaskStore:
         with _LOCK:
             rows = self._conn.execute(
                 "SELECT * FROM tasks WHERE status='queued' "
-                "AND conversation_id IS NULL ORDER BY created_at"
+                "AND COALESCE(media_type,'video')='video' "
+                "AND conversation_id IS NULL AND retry_account IS NULL "
+                "ORDER BY created_at"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def recoverable_image_tasks(self) -> list:
+        """Return image jobs that were queued but never started."""
+        with _LOCK:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE status='queued' AND media_type='image' "
+                "AND retry_account IS NULL "
+                "ORDER BY created_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def fail_interrupted_image_tasks(self):
+        """Fail in-flight images after restart to avoid duplicate paid submissions."""
+        now = time.time()
+        with _LOCK:
+            self._conn.execute(
+                "UPDATE tasks SET status='failed', "
+                "error='Server restarted during image generation; not retried to avoid duplicates', "
+                "updated_at=?, finished_at=? "
+                "WHERE status='processing' AND media_type='image'",
+                (now, now),
+            )
+            self._conn.commit()
+
+    def fail_interrupted_manual_retries(self):
+        """Never auto-submit a deliberate retry after a process restart."""
+        now = time.time()
+        with _LOCK:
+            self._conn.execute(
+                "UPDATE tasks SET status='failed', "
+                "error='Server restarted during manual retry; not resubmitted', "
+                "failure_code='manual_retry_interrupted', updated_at=?, finished_at=? "
+                "WHERE status IN ('queued','processing') AND retry_account IS NOT NULL",
+                (now, now),
+            )
+            self._conn.commit()
 
     def pending_task_count(self) -> int:
         with _LOCK:
@@ -267,6 +376,28 @@ class TaskStore:
                     "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
                 ).fetchall()
         return [dict(r) for r in rows]
+
+    def recent_tasks_for_client(
+        self,
+        api_key_hash: str | None,
+        media_type: str = "image",
+        limit: int = 20,
+    ) -> list:
+        """Return one client's recent media tasks, including anonymous dev tasks."""
+        with _LOCK:
+            if api_key_hash:
+                rows = self._conn.execute(
+                    "SELECT * FROM tasks WHERE api_key_hash=? AND media_type=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (api_key_hash, media_type, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM tasks WHERE api_key_hash IS NULL AND media_type=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (media_type, limit),
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     def key_usage(self, api_key_hash: str, day: str | None = None) -> dict:
         day = day or datetime.date.today().isoformat()

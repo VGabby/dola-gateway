@@ -11,7 +11,12 @@ from patchright.async_api import async_playwright
 
 import config
 from browser import cookie_value, launch_account_context
-from dola_client import CREDIT_FAIL_PATTERN, CreditError
+from dola_client import CreditError
+from upstream_errors import (
+    DolaTemporarilyUnavailableError,
+    VerificationRequiredError,
+    error_from_upstream_text,
+)
 from video_probe import SUBMIT_JS
 
 # Poll /im/chain/single for video status
@@ -122,20 +127,31 @@ def _check_submit(result: dict) -> str:
     """Validates submission result and returns conversation_id."""
     status = result.get("status")
     if status != 200:
-        raise RiskControlError(f"Submission failed HTTP {status}: {json.dumps(result.get('events', []), ensure_ascii=False)[:300]}")
+        detail = json.dumps(result.get("events", []), ensure_ascii=False)[:300]
+        if "710022004" in detail:
+            raise VerificationRequiredError(
+                f"Dola requested verification during submission: {detail}"
+            )
+        classified = error_from_upstream_text(detail, pre_generation=True)
+        if not isinstance(classified, DolaTemporarilyUnavailableError):
+            raise classified
+        raise DolaTemporarilyUnavailableError(
+            f"Dola is temporarily unavailable (submission HTTP {status})."
+        )
 
     for err in result.get("errors", []):
-        if "710022004" in err or "slide" in err or "shark" in err:
-            raise RiskControlError(f"Captcha risk control triggered: {err[:300]}")
-        if "710022002" in err:
-            raise RiskControlError(f"Rate limited: {err[:300]}")
-        raise Exception(f"Submission returned error event: {err[:300]}")
+        err_text = str(err)
+        if "710022004" in err_text or "slide" in err_text or "shark" in err_text:
+            raise VerificationRequiredError(
+                f"Dola requested verification during submission: {err_text[:300]}"
+            )
+        raise error_from_upstream_text(err_text[:300], pre_generation=True)
 
     conv_id = result.get("convId") or ""
     if not conv_id:
-        raise Exception(
-            "Video accepted but no conversation_id returned: "
-            + json.dumps(result.get("events", []), ensure_ascii=False)[:300]
+        raise DolaTemporarilyUnavailableError(
+            "Dola accepted the submission but returned no conversation ID; "
+            "no other account will be tried."
         )
     return conv_id
 
@@ -161,7 +177,6 @@ async def generate_video(account: str, prompt: str, ratio: str = "9:16",
 
     Returns {"video_url": cdn_url, "local_path": local_file, "conversation_id": ...}
     Exceptions: RiskControlError, CreditError, TimeoutError, FileNotFoundError
-    """
     """
     timeout = timeout or config.VIDEO_TIMEOUT
     async with async_playwright() as p:
@@ -203,8 +218,9 @@ async def generate_video(account: str, prompt: str, ratio: str = "9:16",
                     continue
 
                 for text in poll.get("texts", []):
-                    if CREDIT_FAIL_PATTERN.search(text):
-                        raise CreditError(f"Insufficient quota: {text[:80]}")
+                    classified = error_from_upstream_text(text, pre_generation=True)
+                    if not isinstance(classified, DolaTemporarilyUnavailableError):
+                        raise classified
 
                 videos = poll.get("videos", [])
                 if videos:

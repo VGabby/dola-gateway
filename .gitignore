@@ -1,5 +1,6 @@
 # --- secrets / local config ---
 .env.local
+accounts.local.json
 cookies.txt
 *.log
 
@@ -14,6 +15,7 @@ accounts/
 
 # --- generated media ---
 downloads/
+dist/
 
 # --- probe / debug artifacts (contain live session snippets) ---
 /*.html
@@ -31,3 +33,23 @@ dl_now.py
 __pycache__/
 .venv/
 *.pyc
+*.egg-info/
+
+# --- operating system metadata ---
+.DS_Store
+
+# --- desktop build caches and staged runtime payloads ---
+desktop/node_modules/
+desktop/src-tauri/gen/
+desktop/src-tauri/target/
+desktop/runtime/app/
+desktop/runtime/python/
+desktop/runtime/browsers/
+desktop/runtime/.build/
+
+# --- unused Tauri mobile / Store icon derivatives ---
+desktop/src-tauri/icons/64x64.png
+desktop/src-tauri/icons/StoreLogo.png
+desktop/src-tauri/icons/Square*Logo.png
+desktop/src-tauri/icons/android/
+desktop/src-tauri/icons/ios/

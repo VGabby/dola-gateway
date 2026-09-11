@@ -1,0 +1,8 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+aiohttp==3.14.3
+pydantic==2.13.5
+patchright==1.62.3
+python-dotenv==1.2.3
+pillow==12.3.0
+opencv-python-headless==5.0.0.93

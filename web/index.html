@@ -71,6 +71,7 @@ td .prompt{display:block;max-width:340px;overflow:hidden;text-overflow:ellipsis;
 .video-wrap{display:flex;gap:8px;align-items:center}
 .tiny{font-size:12px;color:var(--sub)}
 .account-id{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#52615d;font-weight:600}
+.admin-image-gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.admin-image-gallery img{display:block;width:100%;max-height:60vh;object-fit:contain;border-radius:8px;background:#eef1f0}
 </style>
 </head>
 <body>
@@ -89,6 +90,7 @@ td .prompt{display:block;max-width:340px;overflow:hidden;text-overflow:ellipsis;
     <label><input type="checkbox" id="autoCk" checked onchange="autoRefresh=this.checked">Auto Refresh</label>
     <span id="lastUpdate"></span>
     <button class="btn" onclick="refresh()">Refresh</button>
+    <button class="btn btn-danger" onclick="stopGateway()" title="Stop the local gateway">Stop</button>
     <button class="btn" onclick="logout()" title="Logout">Logout</button>
   </div>
 </header>
@@ -141,11 +143,19 @@ td .prompt{display:block;max-width:340px;overflow:hidden;text-overflow:ellipsis;
     <div class="row"><button class="btn" onclick="closeVideo()">Close</button></div>
   </div>
 </div>
+<div id="imageModal" class="dialog" style="display:none">
+  <div class="box" style="width:720px">
+    <h2>Image Preview</h2>
+    <div id="imageGallery" class="admin-image-gallery"></div>
+    <div class="row"><button class="btn" onclick="closeImage()">Close</button></div>
+  </div>
+</div>
 
 <script>
 const LS_KEY='dola_admin_key';
 let adminKey=localStorage.getItem(LS_KEY)||'';
 let autoRefresh=true, curTab='dash', timer=null;
+let adminImageUrls=[];
 
 function q(s){return document.querySelector(s);}
 function show(id){document.getElementById(id).style.display='flex';}
@@ -159,8 +169,22 @@ async function api(path,opts={}){
   if(r.status===401){showLogin();throw new Error('unauthorized');}
   const text=await r.text();
   let data={};try{data=text?JSON.parse(text):{};}catch(e){}
-  if(!r.ok)throw new Error(data.detail||(`${r.status} ${text.slice(0,120)}`));
+  if(!r.ok)throw new Error(apiErrorMessage(data,r.status,text));
   return data;
+}
+
+function apiErrorMessage(data,status,text){
+  const detail=data&&data.detail;
+  if(Array.isArray(detail)){
+    return detail.map(item=>{
+      if(!item||typeof item!=='object')return String(item);
+      const loc=Array.isArray(item.loc)?item.loc.filter(x=>x!=='body').join('.'):'';
+      const message=item.msg||JSON.stringify(item);
+      return (loc?loc+': ':'')+message;
+    }).join('\n');
+  }
+  if(detail&&typeof detail==='object')return JSON.stringify(detail);
+  return detail||status+' '+text.slice(0,120);
 }
 
 function showLogin(){hide('dlg');show('loginMask');q('#loginErr').style.display='none';}
@@ -172,6 +196,13 @@ async function submitLogin(){
   hide('loginMask');refresh();
 }
 function logout(){adminKey='';localStorage.removeItem(LS_KEY);showLogin();}
+async function stopGateway(){
+  if(!confirm('Stop Dola Gateway on this computer?'))return;
+  try{
+    await api('/api/admin/shutdown',{method:'POST'});
+    document.body.innerHTML='<main style="max-width:560px;margin:80px auto"><div class="card"><h2>Dola Gateway stopped</h2><p>You can close this browser tab. Open the Dola Gateway app to start it again.</p></div></main>';
+  }catch(e){alert(e.message);}
+}
 
 function switchTab(t){
   curTab=t;
@@ -199,7 +230,7 @@ async function loadDash(){
     <div class="stat s1"><div class="v">${st.today_completed}</div><div class="l">Completed Today</div></div>
     <div class="stat s2"><div class="v">${st.today_failed}</div><div class="l">Failed Today</div></div>
     <div class="stat s3"><div class="v">${sr}</div><div class="l">Success Rate</div></div>
-  <div class="stat s4"><div class="v">${st.available_accounts}/${st.total_accounts}</div><div class="l">Available · ${st.total_remaining} Left</div></div>`;
+  <div class="stat s4"><div class="v">${st.available_accounts}/${st.total_accounts}</div><div class="l">Available Accounts · Dola Quota Unknown</div></div>`;
   const max=Math.max(1,...st.per_day.map(d=>d.completed+d.failed));
   q('#chart').innerHTML=st.per_day.map(d=>`
     <div class="col">
@@ -210,12 +241,12 @@ async function loadDash(){
       <div class="lbl">${d.day}</div>
     </div>`).join('');
   q('#perAccount').innerHTML=table(
-    ['Account','Status','Dispatch','Remaining Today','Total Generated','Last Used'],
+    ['Account','Status','Dispatch','Used Today','Total Generated','Last Used'],
     st.per_account.map(a=>[
       accLabel(a),
       statusBadge(a),
       `<label class="sw"><input type="checkbox" ${a.scheduling?'checked':''} onchange="setSched('${a.name}',this.checked)"><i></i></label>`,
-      `<b>${a.used_today}</b> / ${a.limit}<span class="tiny"> (logged)</span>`,
+      `<b>${a.used_today}</b><span class="tiny"> (observed)</span>`,
       a.completed_total||0,
       fmt(a.last_used_at)
     ])
@@ -243,27 +274,43 @@ async function setSched(name,on){
 }
 
 /* ---- Accounts ---- */
+let knownAccountNames=new Set();
 async function loadAccounts(){
   const [a,j]=await Promise.all([api('/api/admin/accounts'),api('/api/admin/jobs')]);
   const jobs=j.jobs||{};
-  const rows=a.accounts.map(x=>{
+  const accounts=[...(a.accounts||[])];
+  const accountNames=new Set(accounts.map(x=>x.name));
+  Object.entries(jobs).forEach(([name,job])=>{
+    if(job.kind==='add'&&job.status==='running'&&!accountNames.has(name)){
+      accounts.push({name,email:'',scheduling:false,used_today:0,quota_status:'unavailable',last_used_at:0,created_at:job.started_at,_jobOnly:true});
+    }
+  });
+  knownAccountNames=new Set([
+    ...accountNames,
+    ...Object.entries(jobs).filter(([,job])=>job.status==='running').map(([name])=>name)
+  ]);
+  const rows=accounts.map(x=>{
     const jb=jobs[x.name];
     const badge=(jb&&jb.kind==='add'&&jb.status==='running')?'<span class="badge b-blue">Adding</span>'
       :(jb&&jb.kind==='add'&&jb.status==='failed')?'<span class="badge b-red">Add Failed</span>'
       :statusBadge(x);
     const warn=(jb&&jb.status==='failed')?' <span class="tiny" title="'+esc(jb.error)+'">⚠</span>':'';
+    const actions=(jb&&jb.kind==='add'&&jb.status==='running')
+      ?`<button class="btn btn-danger" onclick="cancelAdd('${x.name}')">Cancel Login</button>`
+      :x._jobOnly?'—'
+      :`${x.login_ok===1?'':`<button class="btn" style="margin-right:6px" onclick="openAddAccount('${x.name}')">Login</button>`}<button class="btn" style="margin-right:6px" onclick="verify('${x.name}',this)">Verify</button><button class="btn btn-danger" onclick="delAccount('${x.name}')">Delete</button>`;
     return [
       `<span class="account-id">${esc(x.name)}</span>`,
       accLabel(x)+warn,
       badge,
       `<label class="sw"><input type="checkbox" ${x.scheduling?'checked':''} onchange="setSched('${x.name}',this.checked)"><i></i></label>`,
-      `<b>${x.used_today}</b> / ${x.limit}`,
+      `<b>${x.used_today}</b><span class="tiny"> observed</span>`,
       fmt(x.last_used_at),
       fmt(x.created_at),
-      `<button class="btn" style="margin-right:6px" onclick="verify('${x.name}',this)">Verify</button><button class="btn btn-danger" onclick="delAccount('${x.name}')">Delete</button>`
+      actions
     ];
   });
-  q('#accountsTable').innerHTML=table(['Account ID','Name','Status','Dispatch','Remaining','Last Used','Created At','Actions'],rows);
+  q('#accountsTable').innerHTML=table(['Account ID','Name','Status','Dispatch','Used Today','Last Used','Created At','Actions'],rows);
 }
 
 async function verify(name,btn){
@@ -279,20 +326,31 @@ async function delAccount(name){
   try{await api('/api/admin/accounts/'+name,{method:'DELETE'});}catch(e){alert(e.message);}refresh();
 }
 
-function openAddAccount(){
-  let def='acc2';try{const n=document.querySelectorAll('#accountsTable tbody tr').length;def='acc'+(n+1);}catch(e){}
+async function cancelAdd(name){
+  if(!confirm('Cancel login for '+name+'?'))return;
+  try{await api('/api/admin/jobs/'+encodeURIComponent(name),{method:'DELETE'});}catch(e){alert(e.message);}
+  refresh();
+}
+
+function openAddAccount(preferred='',email=''){
+  let def=preferred;
+  if(!def){let n=1;while(knownAccountNames.has('acc'+n))n++;def='acc'+n;}
   showDlg(`<h2>Add Account</h2>
     <label>Account Name</label><input id="f_name" value="${def}">
-    <label>Google Email</label><input id="f_email" placeholder="xxx@yy.asia">
-    <label>Password</label><input id="f_pass" type="password">
-    <label>TOTP Secret (2FA)</label><input id="f_totp" placeholder="2FA secret">
-    <div class="row"><button class="btn" onclick="hide('dlg')">Cancel</button><button class="btn btn-p" onclick="submitAddAccount()">Start Login</button></div>`);
+    <label>Email Label (optional)</label><input id="f_email" value="${esc(email)}" placeholder="account@example.com">
+    <div class="hint" style="margin-top:10px">A separate Chromium window will open. Sign in with Google there; this gateway never receives your password or 2FA code.</div>
+    <div class="row"><button class="btn" onclick="hide('dlg')">Cancel</button><button class="btn btn-p" onclick="submitAddAccount(this)">Open Google Login</button></div>`);
 }
-async function submitAddAccount(){
-  const body={name:q('#f_name').value.trim(),email:q('#f_email').value.trim(),password:q('#f_pass').value,totp:q('#f_totp').value.trim()};
-  if(!body.name||!body.email||!body.password)return alert('Please enter account name, email and password');
-  try{await api('/api/admin/accounts',{method:'POST',body});}catch(e){return alert(e.message);}
-  hide('dlg');refresh();
+async function submitAddAccount(btn){
+  const body={name:q('#f_name').value.trim(),email:q('#f_email').value.trim()};
+  if(!body.name)return alert('Please enter an account name');
+  btn.disabled=true;const old=btn.textContent;btn.textContent='Opening…';
+  let result;
+  try{result=await api('/api/admin/accounts',{method:'POST',body});}
+  catch(e){btn.disabled=false;btn.textContent=old;return alert(e.message);}
+  hide('dlg');
+  alert(result.message||'Complete Google sign-in in the Chromium window.');
+  refresh();
 }
 
 /* ---- Task Queue ---- */
@@ -300,22 +358,39 @@ async function loadTasks(){
   const r=await api('/api/admin/tasks?limit=50');
   const sb={'queued':'<span class="badge b-gray">Queued</span>','processing':'<span class="badge b-blue">Processing</span>','completed':'<span class="badge b-green">Completed</span>','failed':'<span class="badge b-red">Failed</span>'};
   const rows=r.tasks.map(t=>[
-    '<span class="tiny" title="'+esc(t.id)+'">'+t.id.replace('video_','').slice(0,10)+'</span>',
+    '<span class="tiny" title="'+esc(t.id)+'">'+t.id.replace(/^(video|image)_/,'').slice(0,10)+'</span>',
     '<span class="prompt" title="'+esc(t.prompt||'')+'">'+esc(t.prompt||'')+'</span>',
     t.account||'-',
     t.api_key_name||'—',
-    (t.duration||10)+'s',
+    t.media_type==='image'?'Image':(t.duration||10)+'s video',
     sb[t.status]||'<span class="badge b-gray">'+esc(t.status)+'</span>',
     fmt(t.created_at),
-    t.video_url
+    t.image_url
+      ?'<button class="btn" onclick="previewImages(&quot;'+esc(t.id)+'&quot;,'+(t.image_count||1)+')">Preview '+(t.image_count>1?'('+t.image_count+')':'')+'</button>'
+      :t.video_url
       ?'<div class="video-wrap"><a href="'+esc(t.video_url)+'" target="_blank">Open</a><button class="btn" onclick="playVideo(&quot;'+esc(t.video_url)+'&quot;)">Preview</button></div>'
       :(t.status==='failed'?'<span class="tiny" title="'+esc(t.error||'')+'">'+esc((t.error||'').slice(0,30))+'</span>':'—')
   ]);
-  q('#tasksTable').innerHTML=table(['Task ID','Prompt','Account','Client','Duration','Status','Created At','Video'],rows);
+  q('#tasksTable').innerHTML=table(['Task ID','Prompt','Account','Client','Type','Status','Created At','Result'],rows);
 }
 
 function playVideo(url){q('#videoEl').src=url;show('videoModal');}
 function closeVideo(){q('#videoEl').pause();q('#videoEl').src='';hide('videoModal');}
+async function previewImages(taskId,count){
+  try{
+    closeImage();
+    const images=[];
+    for(let index=0;index<count;index++){
+      const r=await fetch('/api/admin/tasks/'+encodeURIComponent(taskId)+'/content/'+index,{headers:{'X-Admin-Key':adminKey}});
+      if(r.status===401){showLogin();return;}
+      if(!r.ok){const text=await r.text();throw new Error(r.status+' '+text.slice(0,120));}
+      const url=URL.createObjectURL(await r.blob());adminImageUrls.push(url);
+      const image=document.createElement('img');image.src=url;image.alt='Generated image '+(index+1);images.push(image);
+    }
+    q('#imageGallery').replaceChildren(...images);show('imageModal');
+  }catch(e){alert(e.message);}
+}
+function closeImage(){q('#imageGallery').replaceChildren();adminImageUrls.forEach(url=>URL.revokeObjectURL(url));adminImageUrls=[];hide('imageModal');}
 
 /* ---- API Keys ---- */
 async function loadKeys(){

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "fixture": true,
+  "target": "unassembled",
+  "python": {"interpreter": "python/bin/python3"},
+  "app": {"directory": "app"},
+  "patchright": {"browser_executable": "browsers/chromium"}
+}

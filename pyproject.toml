@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dola-image-gateway"
+dynamic = ["version"]
+description = "Local multi-account Dola image and video generation gateway"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "aiohttp",
+  "fastapi",
+  "opencv-python-headless",
+  "patchright",
+  "pillow",
+  "pydantic",
+  "python-dotenv",
+  "uvicorn[standard]",
+]
+
+[tool.setuptools]
+py-modules = [
+  "account_config",
+  "add_account",
+  "app_version",
+  "browser",
+  "browser_pool",
+  "config",
+  "dola_client",
+  "gap",
+  "image_worker",
+  "media",
+  "server",
+  "store",
+  "upstream_errors",
+  "video_probe",
+  "video_worker",
+  "video_worker_ui",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "app_version.APP_VERSION"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"

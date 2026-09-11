@@ -1,20 +1,27 @@
-"""Browser Account Pool: Manages accounts/ profiles with concurrency control and daily limits."""
+"""Browser account pool with observed usage and upstream-limit handling."""
 import asyncio
 import shutil
 import sqlite3
+import stat
 import time
-from datetime import date, datetime, time as dt_time, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import date
 from pathlib import Path
 
 from dola_client import CreditError
-from video_worker_ui import (
-    AccountLimitedError, CreditInsufficientError, RiskControlError, generate_video, resume_video,
+from image_worker import (
+    ImageGenerationError,
+    LoginExpiredError,
+    generate_image as generate_image_for_account,
+)
+from video_worker_ui import AccountLimitedError, RiskControlError, generate_video, resume_video
+from upstream_errors import (
+    DolaTemporarilyUnavailableError,
+    ExplicitRestrictionError,
+    PromptContentRejectedError,
+    classify_upstream_text,
+    error_from_upstream_text,
 )
 import config
-
-DAILY_LIMIT = 2
-COOLDOWN_SEC = 1800  # 30-minute cooldown on risk control
 
 
 class AllAccountsLimitedError(RuntimeError):
@@ -22,7 +29,7 @@ class AllAccountsLimitedError(RuntimeError):
 
 
 class AllAccountsQuotaBlockedError(RuntimeError):
-    """All active schedulable accounts are known to have insufficient credits."""
+    """Dola explicitly rejected generation for every schedulable account."""
 
 
 class BrowserPool:
@@ -31,6 +38,7 @@ class BrowserPool:
         self.accounts_dir = Path(accounts_dir)
         self.semaphore = asyncio.Semaphore(max_concurrency)
         self._locks: dict[str, asyncio.Lock] = {}
+        self._account_available = asyncio.Condition()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(
@@ -53,8 +61,10 @@ class BrowserPool:
                 limit_reason TEXT DEFAULT '',
                 quota_blocked_until REAL DEFAULT 0,
                 quota_reason TEXT DEFAULT '',
-                credit_balance INTEGER,
-                credit_checked_at REAL DEFAULT 0
+                video_restricted_detected_at REAL DEFAULT 0,
+                video_restriction_reason TEXT DEFAULT '',
+                image_restricted_detected_at REAL DEFAULT 0,
+                image_restriction_reason TEXT DEFAULT ''
             )
             """
         )
@@ -66,14 +76,17 @@ class BrowserPool:
             ("limit_reason", "TEXT DEFAULT ''"),
             ("quota_blocked_until", "REAL DEFAULT 0"),
             ("quota_reason", "TEXT DEFAULT ''"),
-            ("credit_balance", "INTEGER"),
-            ("credit_checked_at", "REAL DEFAULT 0"),
+            ("video_restricted_detected_at", "REAL DEFAULT 0"),
+            ("video_restriction_reason", "TEXT DEFAULT ''"),
+            ("image_restricted_detected_at", "REAL DEFAULT 0"),
+            ("image_restriction_reason", "TEXT DEFAULT ''"),
         ):
             try:
                 self._conn.execute(f"ALTER TABLE accounts_meta ADD COLUMN {column} {definition}")
                 self._conn.commit()
             except sqlite3.OperationalError:
                 pass
+        self._migrate_legacy_video_restrictions()
 
     # ===== Account Discovery & Metadata =====
 
@@ -113,52 +126,62 @@ class BrowserPool:
         )
         self._conn.commit()
 
-    def _next_limit_reset(self) -> float:
-        """Calculates next daily quota reset timestamp."""
-        try:
-            tz = ZoneInfo(config.LIMIT_RESET_TZ)
-        except Exception:
-            # Fallback to fixed offset if tzdata is not installed.
-            offsets = {"Asia/Tokyo": 9, "Asia/Hong_Kong": 8, "UTC": 0}
-            tz = timezone(timedelta(hours=offsets.get(config.LIMIT_RESET_TZ, 9)))
-        now = datetime.now(tz)
-        next_day = now.date() + timedelta(days=1)
-        return datetime.combine(next_day, dt_time.min, tzinfo=tz).timestamp()
-
-    def _clear_expired_rate_limits(self):
+    def _migrate_legacy_video_restrictions(self):
+        """Conservatively migrate only active, explicit legacy video blocks."""
         now = time.time()
-        cur = self._conn.execute(
-            "UPDATE accounts_meta SET rate_limited_until=0, limit_reason='', "
-            "quota_blocked_until=0, quota_reason='' "
-            "WHERE (rate_limited_until > 0 AND rate_limited_until <= ?) "
-            "OR (quota_blocked_until > 0 AND quota_blocked_until <= ?)", (now, now))
-        if cur.rowcount:
+        rows = self._conn.execute(
+            "SELECT * FROM accounts_meta WHERE video_restricted_detected_at=0 AND "
+            "(rate_limited_until>? OR quota_blocked_until>?)", (now, now)
+        ).fetchall()
+        changed = False
+        for row in rows:
+            detail = row["limit_reason"] or row["quota_reason"] or ""
+            classified = classify_upstream_text(detail)
+            if not classified.is_restriction:
+                continue
+            detected = row["last_used_at"] or now
+            self._conn.execute(
+                "UPDATE accounts_meta SET video_restricted_detected_at=?, "
+                "video_restriction_reason=? WHERE name=?",
+                (detected, classified.kind, row["name"]),
+            )
+            changed = True
+        if changed:
             self._conn.commit()
 
-    def _mark_quota_blocked(self, account: str, reason: str = ""):
+    def mark_restriction(self, account: str, media_type: str, reason: str):
+        if media_type not in {"video", "image"}:
+            raise ValueError("media_type must be video or image")
+        if reason not in {"daily_limit", "credits_unavailable", "risk_control"}:
+            raise ValueError("invalid restriction reason")
+        self._ensure_meta(account)
         self._conn.execute(
-            "UPDATE accounts_meta SET quota_blocked_until=?, quota_reason=?, last_used_at=? WHERE name=?",
-            (self._next_limit_reset(), reason[:300], time.time(), account),
+            f"UPDATE accounts_meta SET {media_type}_restricted_detected_at=?, "
+            f"{media_type}_restriction_reason=?, last_used_at=? WHERE name=?",
+            (time.time(), reason, time.time(), account),
         )
         self._conn.commit()
 
-    def _mark_daily_limit(self, account: str, reason: str = ""):
-        """Marks account as reaching daily limit until next reset."""
+    def clear_restriction(self, account: str, media_type: str):
+        if media_type not in {"video", "image"}:
+            raise ValueError("media_type must be video or image")
         self._conn.execute(
-            "INSERT INTO usage(account, day, used) VALUES (?,?,?) "
-            "ON CONFLICT(account, day) DO UPDATE SET used=MAX(used, excluded.used)",
-            (account, date.today().isoformat(), DAILY_LIMIT),
-        )
-        self._conn.execute(
-            "UPDATE accounts_meta SET last_used_at=?, rate_limited_until=?, limit_reason=? WHERE name=?",
-            (time.time(), self._next_limit_reset(), reason[:300], account),
+            f"UPDATE accounts_meta SET {media_type}_restricted_detected_at=0, "
+            f"{media_type}_restriction_reason='' WHERE name=?", (account,)
         )
         self._conn.commit()
+
+    # Legacy internal names retained for callers during the compatibility release.
+    def _mark_quota_blocked(self, account: str, reason: str = ""):
+        classified = classify_upstream_text(reason)
+        if classified.is_restriction:
+            self.mark_restriction(account, "video", classified.kind)
+
+    def _mark_daily_limit(self, account: str, reason: str = ""):
+        self.mark_restriction(account, "video", "daily_limit")
 
     def list_accounts(self) -> list:
         """Dashboard view: combines metadata, quota, and busy status."""
-        self._clear_expired_rate_limits()
-        now = time.time()
         out = []
         for a in self.accounts:
             m = self._meta(a)
@@ -174,33 +197,47 @@ class BrowserPool:
                 "login_ok": m["login_ok"] if m else None,
                 "login_checked_at": m["login_checked_at"] if m else 0,
                 "cooldown_until": m["cooldown_until"] if m else 0,
-                "cooling": bool(m and m["cooldown_until"] > now),
+                "cooling": False,
                 "rate_limited_until": m["rate_limited_until"] if m and m["rate_limited_until"] else 0,
-                "rate_limited": bool(m and m["rate_limited_until"] > now),
+                "rate_limited": False,
                 "limit_reason": m["limit_reason"] if m else "",
                 "quota_blocked_until": m["quota_blocked_until"] if m and m["quota_blocked_until"] else 0,
-                "quota_blocked": bool(m and m["quota_blocked_until"] > now),
+                "quota_blocked": False,
                 "quota_reason": m["quota_reason"] if m else "",
-                "credit_balance": m["credit_balance"] if m else None,
-                "credit_checked_at": m["credit_checked_at"] if m else 0,
+                "video_restricted_detected_at": m["video_restricted_detected_at"] if m else 0,
+                "video_restriction_reason": m["video_restriction_reason"] if m else "",
+                "video_restricted": bool(m and m["video_restricted_detected_at"]),
+                "image_restricted_detected_at": m["image_restricted_detected_at"] if m else 0,
+                "image_restriction_reason": m["image_restriction_reason"] if m else "",
+                "image_restricted": bool(m and m["image_restricted_detected_at"]),
                 "used_today": used,
-                "limit": DAILY_LIMIT,
-                "remaining": max(0, DAILY_LIMIT - used),
+                # Dola currently exposes neither a dependable credit balance nor
+                # a numeric image/video quota to the web client.
+                "quota_status": (
+                    "blocked"
+                    if m and (m["video_restricted_detected_at"] or m["image_restricted_detected_at"])
+                    else "unavailable"
+                ),
+                "limit": None,
+                "remaining": None,
                 "busy": bool(lock and lock.locked()),
             })
         return out
 
     def set_scheduling(self, name: str, on: bool):
+        self._ensure_meta(name)
         self._conn.execute(
             "UPDATE accounts_meta SET scheduling=? WHERE name=?", (1 if on else 0, name))
         self._conn.commit()
 
     def set_email(self, name: str, email: str):
+        self._ensure_meta(name)
         self._conn.execute(
             "UPDATE accounts_meta SET email=? WHERE name=?", (email, name))
         self._conn.commit()
 
     def set_login_status(self, name: str, ok: bool):
+        self._ensure_meta(name)
         self._conn.execute(
             "UPDATE accounts_meta SET login_ok=?, login_checked_at=? WHERE name=?",
             (1 if ok else 0, time.time(), name),
@@ -208,6 +245,7 @@ class BrowserPool:
         self._conn.commit()
 
     def set_note(self, name: str, note: str):
+        self._ensure_meta(name)
         self._conn.execute(
             "UPDATE accounts_meta SET note=? WHERE name=?", (note, name))
         self._conn.commit()
@@ -215,12 +253,23 @@ class BrowserPool:
     def delete_account(self, name: str):
         lock = self._locks.get(name)
         if lock and lock.locked():
-            raise RuntimeError("Account is generating video, cannot delete")
-        d = self.accounts_dir / name
-        if d.exists():
-            shutil.rmtree(d)
-        self._conn.execute("DELETE FROM accounts_meta WHERE name=?", (name,))
-        self._conn.commit()
+            raise RuntimeError("Account is currently in use and cannot be removed")
+        profile = self.accounts_dir / name
+
+        def retry_readonly(function, path, _error):
+            Path(path).chmod(stat.S_IRWXU)
+            function(path)
+
+        if profile.is_symlink():
+            profile.unlink()
+        elif profile.exists():
+            # Chromium can leave read-only cache entries on Windows. Retrying
+            # those entries as owner-writable makes account removal portable.
+            shutil.rmtree(profile, onerror=retry_readonly)
+        with self._conn:
+            self._conn.execute("DELETE FROM usage WHERE account=?", (name,))
+            self._conn.execute("DELETE FROM accounts_meta WHERE name=?", (name,))
+        self._locks.pop(name, None)
 
     async def verify_account(self, name: str) -> bool:
         """Verifies login state in headless mode and updates cache."""
@@ -240,46 +289,34 @@ class BrowserPool:
 
     # ===== Scheduling =====
 
-    def _set_credit_balance(self, account: str, balance: int, source: str = ""):
-        self._conn.execute(
-            "UPDATE accounts_meta SET credit_balance=?, credit_checked_at=? WHERE name=?",
-            (max(0, int(balance)), time.time(), account),
-        )
-        if balance < 2:
-            self._conn.execute(
-                "UPDATE accounts_meta SET quota_blocked_until=?, quota_reason=? WHERE name=?",
-                (self._next_limit_reset(), source[:300] or "Insufficient credits", account),
-            )
-        self._conn.commit()
-
-    def _credit_available(self, account: str, required: int = 2) -> bool:
-        row = self._meta(account)
-        return not row or row["credit_balance"] is None or row["credit_balance"] >= required
-
     def _schedulable(self, a: dict) -> bool:
-        return (a["scheduling"] and not a["cooling"] and not a["rate_limited"]
-                and not a["quota_blocked"] and a["used_today"] < DAILY_LIMIT
-                and (a["credit_balance"] is None or a["credit_balance"] >= 2))
+        return (a["scheduling"] and bool(a["login_ok"])
+                and not a["video_restricted"])
+
+    def _image_schedulable(self, account: dict) -> bool:
+        return (
+            account["scheduling"]
+            and bool(account["login_ok"])
+            and not account["image_restricted"]
+        )
 
     @property
     def all_accounts_limited(self) -> bool:
-        """Returns True if all active accounts have reached daily limit."""
-        candidates = [a for a in self.list_accounts() if a["scheduling"] and not a["cooling"]]
-        return bool(candidates) and all(
-            a["rate_limited"] or a["used_today"] >= DAILY_LIMIT for a in candidates
-        )
+        """Returns True only when Dola reported a limit for every candidate."""
+        candidates = [a for a in self.list_accounts() if a["scheduling"]]
+        return bool(candidates) and all(a["video_restricted"] for a in candidates)
 
     @property
     def all_accounts_quota_blocked(self) -> bool:
-        candidates = [a for a in self.list_accounts() if a["scheduling"] and not a["cooling"]]
-        return bool(candidates) and all(
-            a["quota_blocked"] or a["rate_limited"] or a["used_today"] >= DAILY_LIMIT
-            for a in candidates
-        ) and any(a["quota_blocked"] for a in candidates)
+        return self.all_accounts_limited
 
     @property
     def available(self) -> bool:
         return any(self._schedulable(a) for a in self.list_accounts())
+
+    @property
+    def available_for_image(self) -> bool:
+        return any(self._image_schedulable(a) for a in self.list_accounts())
 
     @property
     def cookie_count(self) -> int:  # /health compatibility
@@ -288,9 +325,145 @@ class BrowserPool:
     def account_status(self) -> list:
         return [{
             "account": a["name"], "used_today": a["used_today"], "limit": a["limit"],
+            "remaining": a["remaining"], "quota_status": a["quota_status"],
+            "login_ok": a["login_ok"],
             "rate_limited": a["rate_limited"], "rate_limited_until": a["rate_limited_until"],
             "quota_blocked": a["quota_blocked"], "quota_blocked_until": a["quota_blocked_until"],
+            "video_restricted": a["video_restricted"],
+            "video_restricted_detected_at": a["video_restricted_detected_at"],
+            "video_restriction_reason": a["video_restriction_reason"],
+            "image_restricted": a["image_restricted"],
+            "image_restricted_detected_at": a["image_restricted_detected_at"],
+            "image_restriction_reason": a["image_restriction_reason"],
         } for a in self.list_accounts()]
+
+    def validate_manual_retry(self, account: str, media_type: str, *, require_idle: bool = True):
+        if account not in self.accounts:
+            raise FileNotFoundError(f"Account does not exist: {account}")
+        row = next(item for item in self.list_accounts() if item["name"] == account)
+        if not row["scheduling"]:
+            raise ValueError("Account dispatch is disabled")
+        if not row["login_ok"]:
+            raise ValueError("Account is not logged in")
+        if not row[f"{media_type}_restricted"]:
+            raise ValueError(f"Account has no {media_type} restriction to retry")
+        lock = self._locks.setdefault(account, asyncio.Lock())
+        if require_idle and lock.locked():
+            raise RuntimeError("Account is busy")
+        return row
+
+    @staticmethod
+    def _upstream_error(exc: Exception, *, pre_generation: bool = True) -> Exception:
+        if isinstance(exc, (PromptContentRejectedError,
+                            DolaTemporarilyUnavailableError,
+                            ExplicitRestrictionError)):
+            return exc
+        if isinstance(exc, AccountLimitedError):
+            return ExplicitRestrictionError(
+                "daily_limit", str(exc), pre_generation=pre_generation
+            )
+        if isinstance(exc, RiskControlError):
+            return ExplicitRestrictionError(
+                "risk_control", str(exc), pre_generation=pre_generation
+            )
+        if isinstance(exc, CreditError):
+            return error_from_upstream_text(exc, pre_generation=pre_generation)
+        return error_from_upstream_text(exc, pre_generation=pre_generation)
+
+    async def generate_image(
+        self,
+        prompt: str,
+        ratio: str = "1:1",
+        style: str = "auto",
+        on_start=None,
+        retry_account: str | None = None,
+    ) -> dict:
+        """Generate an image; a manual retry pins one restricted account once."""
+        async with self.semaphore:
+            while True:
+                if retry_account:
+                    eligible = [self.validate_manual_retry(retry_account, "image")]
+                else:
+                    eligible = [
+                        item for item in self.list_accounts()
+                        if self._image_schedulable(item)
+                    ]
+                if not eligible:
+                    raise RuntimeError(
+                        "No verified image-generation account is available"
+                    )
+
+                selected = None
+                for item in eligible:
+                    lock = self._locks.setdefault(item["name"], asyncio.Lock())
+                    if not lock.locked():
+                        selected = (item["name"], lock)
+                        break
+
+                if selected is None:
+                    if retry_account:
+                        # A deliberate retry is never queued behind another use of
+                        # the pinned account: fail without contacting Dola.
+                        raise RuntimeError("Account is busy")
+                    # Video and image tasks share account locks. The timeout also
+                    # observes releases from legacy video paths that do not notify.
+                    async with self._account_available:
+                        try:
+                            await asyncio.wait_for(
+                                self._account_available.wait(), timeout=0.5
+                            )
+                        except TimeoutError:
+                            pass
+                    continue
+
+                account, lock = selected
+                await lock.acquire()
+                try:
+                    current = next(
+                        row for row in self.list_accounts() if row["name"] == account
+                    )
+                    if retry_account:
+                        self.validate_manual_retry(account, "image", require_idle=False)
+                    elif not self._image_schedulable(current):
+                        continue
+                    if on_start:
+                        on_start(account)
+                    try:
+                        result = await generate_image_for_account(
+                            account, prompt, ratio, style
+                        )
+                    except LoginExpiredError:
+                        self.set_login_status(account, False)
+                        if retry_account:
+                            raise
+                        continue
+                    except (CreditError, ImageGenerationError, ExplicitRestrictionError,
+                            PromptContentRejectedError,
+                            DolaTemporarilyUnavailableError) as exc:
+                        classified = self._upstream_error(exc)
+                        if isinstance(classified, ExplicitRestrictionError):
+                            self.mark_restriction(account, "image", classified.kind)
+                            if not retry_account and classified.pre_generation:
+                                continue
+                        raise classified
+                    except TimeoutError as exc:
+                        raise DolaTemporarilyUnavailableError(
+                            "Dola is temporarily unavailable. The image request timed out; "
+                            "the account restriction was preserved."
+                        ) from exc
+                    self._conn.execute(
+                        "UPDATE accounts_meta SET last_used_at=? WHERE name=?",
+                        (time.time(), account),
+                    )
+                    self._claim(account)
+                    self._conn.commit()
+                    if retry_account:
+                        self.clear_restriction(account, "image")
+                    return result
+                finally:
+                    lock.release()
+                    async with self._account_available:
+                        self._account_available.notify_all()
 
     async def resume_video(self, account: str, conversation_id: str, timeout: int,
                            on_poll=None) -> dict:
@@ -298,31 +471,42 @@ class BrowserPool:
         async with self.semaphore:
             lock = self._locks.setdefault(account, asyncio.Lock())
             async with lock:
-                def on_balance(balance, source=""):
-                    self._set_credit_balance(account, balance, source)
                 try:
                     result = await resume_video(account, conversation_id, timeout,
-                                                on_poll=on_poll, on_balance=on_balance)
+                                                on_poll=on_poll)
                     self._claim(account)
                     self._conn.execute(
                         "UPDATE accounts_meta SET last_used_at=? WHERE name=?",
                         (time.time(), account))
                     self._conn.commit()
                     return result
-                except TimeoutError:
+                except TimeoutError as exc:
                     self._claim(account)
                     self._conn.commit()
-                    raise
+                    raise DolaTemporarilyUnavailableError(
+                        "Dola is temporarily unavailable. The accepted video did not "
+                        "finish before the timeout."
+                    ) from exc
+                except (AccountLimitedError, CreditError, RiskControlError,
+                        ExplicitRestrictionError, PromptContentRejectedError,
+                        DolaTemporarilyUnavailableError) as exc:
+                    classified = self._upstream_error(exc, pre_generation=False)
+                    if isinstance(classified, ExplicitRestrictionError):
+                        self.mark_restriction(account, "video", classified.kind)
+                    raise classified
 
     async def generate_video(self, prompt: str, ratio: str = None, duration: int = None,
                              model: str = "seedance_v2.0", on_conversation_id=None,
-                             on_poll=None, on_balance=None,
-                             reference_image_paths: list[str] | None = None) -> dict:
-        """Picks an idle schedulable account; automatically rotates on quota/risk limits."""
+                             on_poll=None,
+                             reference_image_paths: list[str] | None = None,
+                             retry_account: str | None = None) -> dict:
+        """Generate video; explicit pre-submit restrictions alone may rotate."""
         async with self.semaphore:
             last_err = None
-            for a in self.list_accounts():
-                if not self._schedulable(a):
+            candidates = ([self.validate_manual_retry(retry_account, "video")]
+                          if retry_account else self.list_accounts())
+            for a in candidates:
+                if not retry_account and not self._schedulable(a):
                     continue
                 account = a["name"]
                 lock = self._locks.setdefault(account, asyncio.Lock())
@@ -330,64 +514,51 @@ class BrowserPool:
                 if lock.locked():
                     continue
                 async with lock:
-                    if not self._schedulable(next(x for x in self.list_accounts() if x['name'] == account)):
+                    if retry_account:
+                        self.validate_manual_retry(account, "video", require_idle=False)
+                    elif not self._schedulable(next(x for x in self.list_accounts() if x['name'] == account)):
                         continue  # State changed while waiting
                     try:
-                        def on_balance(balance, source=""):
-                            self._set_credit_balance(account, balance, source)
-
                         result = await generate_video(
                             account, prompt, ratio, duration, model=model,
                             on_conversation_id=on_conversation_id, on_poll=on_poll,
-                            on_balance=on_balance, reference_image_paths=reference_image_paths)
+                            reference_image_paths=reference_image_paths)
                         self._claim(account)
                         self._conn.execute(
                             "UPDATE accounts_meta SET last_used_at=? WHERE name=?",
                             (time.time(), account))
                         self._conn.commit()
+                        if retry_account:
+                            self.clear_restriction(account, "video")
                         return result
-                    except CreditInsufficientError as e:
-                        print(f"[pool] {account} insufficient points before generation, skipping: {e}", flush=True)
-                        self._mark_quota_blocked(account, str(e))
-                        last_err = e
-                        continue
-                    except AccountLimitedError as e:
-                        print(f"[pool] {account} reached daily limit, rotating: {e}", flush=True)
-                        self._mark_daily_limit(account, str(e))
-                        last_err = e
-                        continue
-                    except CreditError as e:
-                        print(f"[pool] {account} out of quota, rotating: {e}", flush=True)
-                        self._claim(account)
-                        last_err = e
-                        continue
-                    except RiskControlError as e:
-                        print(f"[pool] {account} risk control triggered (30m cooldown), rotating: {e}", flush=True)
-                        self._conn.execute(
-                            "UPDATE accounts_meta SET cooldown_until=? WHERE name=?",
-                            (time.time() + COOLDOWN_SEC, account))
-                        self._conn.commit()
-                        last_err = e
-                        continue
+                    except (AccountLimitedError, CreditError, RiskControlError,
+                            ExplicitRestrictionError, PromptContentRejectedError,
+                            DolaTemporarilyUnavailableError) as exc:
+                        classified = self._upstream_error(exc)
+                        if isinstance(classified, ExplicitRestrictionError):
+                            self.mark_restriction(account, "video", classified.kind)
+                            last_err = classified
+                            if not retry_account and classified.pre_generation:
+                                continue
+                        raise classified
                     except TimeoutError as e:
                         # Once conversation_id is assigned, task continues on Dola side;
-                        # do not re-submit to prevent duplicate credit consumption.
+                        # do not re-submit because Dola may already be processing it.
                         self._claim(account)
                         self._conn.execute(
                             "UPDATE accounts_meta SET last_used_at=? WHERE name=?",
                             (time.time(), account))
                         self._conn.commit()
-                        raise
+                        raise DolaTemporarilyUnavailableError(
+                            "Dola is temporarily unavailable. The video result was not "
+                            "available before the timeout; no other account was tried."
+                        ) from e
                     except FileNotFoundError as e:
                         print(f"[pool] {account} profile missing, skipping: {e}", flush=True)
                         last_err = e
                         continue
-            if self.all_accounts_quota_blocked:
-                raise AllAccountsQuotaBlockedError(
-                    f"429: All schedulable accounts have insufficient points: {last_err or 'No accounts'}"
-                )
             if self.all_accounts_limited:
                 raise AllAccountsLimitedError(
-                    f"429: All schedulable accounts have reached Dola daily limit: {last_err or 'No accounts'}"
+                    f"All schedulable accounts have an explicit video restriction: {last_err or 'No accounts'}"
                 )
             raise RuntimeError(f"No available accounts in pool: {last_err or 'No accounts'}")

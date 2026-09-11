@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "python": {
+    "provider": "uv-managed-python-build-standalone",
+    "version": "3.13.7"
+  },
+  "patchright": {
+    "version": "1.62.3",
+    "chromium_revision": "1234",
+    "chromium_version": "151.0.7922.34"
+  },
+  "targets": {
+    "macos-arm64": {
+      "host_system": "Darwin",
+      "host_machines": ["arm64", "aarch64"],
+      "python_interpreters": ["bin/python3.13", "bin/python3", "bin/python"],
+      "browser_executables": [
+        "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+      ]
+    },
+    "windows-x64": {
+      "host_system": "Windows",
+      "host_machines": ["amd64", "x86_64"],
+      "python_interpreters": ["python.exe"],
+      "browser_executables": ["chrome-win64/chrome.exe", "chrome-win/chrome.exe"]
+    }
+  }
+}

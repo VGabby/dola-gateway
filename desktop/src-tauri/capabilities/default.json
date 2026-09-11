@@ -1,0 +1,6 @@
+{
+  "identifier": "desktop-startup",
+  "description": "No frontend IPC. Lifecycle actions use intercepted local navigation only.",
+  "windows": ["main"],
+  "permissions": []
+}

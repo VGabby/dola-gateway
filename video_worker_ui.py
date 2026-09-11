@@ -14,13 +14,25 @@ from gap import find_gap_x
 
 import config
 from browser import cookie_value, launch_account_context
-from dola_client import CREDIT_FAIL_PATTERN, CreditError
+from dola_client import CreditError
 from video_worker import POLL_JS, RiskControlError, _download, extract_unwatermarked_url
+from upstream_errors import (
+    DolaTemporarilyUnavailableError,
+    VerificationRequiredError,
+    error_from_upstream_text,
+)
 
 # Daily limit pattern matching response text
 DAILY_LIMIT_PATTERN = re.compile(
     r"動画生成の\s*1日あたりの上限|每日(?:视频|影片)?生成.*(?:上限|限额|额度)|"
     r"daily.*(?:limit|quota)|(?:limit|quota).*per\s*day",
+    re.IGNORECASE,
+)
+VIDEO_NOT_STARTED_PATTERN = re.compile(
+    r"supports?\s+(?:video\s+generation\s+)?durations?\s+from|"
+    r"nearest\s+supported\s+duration|"
+    r"動画生成.{0,80}(?:対応|サポート).{0,40}秒|"
+    r"(?:生成|作成).{0,60}(?:最も近い|最寄り).{0,40}秒",
     re.IGNORECASE,
 )
 
@@ -29,89 +41,58 @@ class AccountLimitedError(Exception):
     """Account reached daily video generation limit."""
 
 
-class CreditInsufficientError(Exception):
-    """Insufficient points prior to generation."""
-
-
 VIDEO_BTN = "text=動画を作成"          # Entry point button in ja-JP locale
 CAPTCHA_FRAME_KEY = "bdcaptcha.html"   # Captcha verifycenter iframe
 
 
-# Read-only balance pre-check from recent conversations
-BALANCE_JS = r"""
-async ({msToken, fp}) => {
-  const params = new URLSearchParams({
-    version_code: "20800", language: "ja", device_platform: "web",
-    doubao_device_platform: "web", aid: "495671", real_aid: "495671",
-    pkg_type: "release_version", pc_version: "3.32.62", doubao_pc_version: "3.32.62",
-    region: "JP", sys_region: "JP", samantha_web: "1", web_platform: "browser",
-    "use-olympus-account": "1", web_tab_id: crypto.randomUUID(),
-  });
-  if (msToken) params.set("msToken", msToken);
-  if (fp) params.set("fp", fp);
-  const headers = {
-    "Content-Type": "application/json; encoding=utf-8",
-    "agw-js-conv": "str", "Accept": "*/*",
-  };
-  const recent = await fetch("/im/chain/recent_conv?" + params.toString(), {
-    method: "POST", headers,
-    body: JSON.stringify({
-      cmd: 3200,
-      uplink_body: {pull_recent_conv_chain_uplink_body: {
-        limit: 20, message_count_per_conv: 10, api_version: 1, conv_version: 0,
-        direction: 3,
-        option: {not_need_message: false, need_complete_conversation: true,
-          need_coco_conversation: true, need_coco_bot: true,
-          need_pc_pin_chain: true, pc_pin_query_type: 0},
-      }},
-      sequence_id: crypto.randomUUID(), channel: 2, version: "1",
-    }), credentials: "include",
-  });
-  if (!recent.ok) return {ok: false, texts: []};
-  const recentData = await recent.json();
-  const body = recentData.downlink_body || {};
-  const down = body.pull_recent_conv_chain_downlink_body || {};
-  const cells = down.cells || [];
-  const ids = cells.map(c => (c.conversation || {}).conversation_id || c.id)
-    .filter(Boolean).slice(0, 10);
-  if (!ids.length) return {ok: true, texts: []};
+async def _first_visible(locator, description: str, timeout: int = 5000):
+    """Waits for the first visible match, including dynamically mounted controls."""
+    deadline = time.monotonic() + timeout / 1000
+    while True:
+        for index in range(await locator.count()):
+            candidate = locator.nth(index)
+            if await candidate.is_visible():
+                return candidate
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(0.1, remaining))
+    raise RuntimeError(f"Visible {description} not found within {timeout}ms")
 
-  const batch = await fetch("/im/chain/batch_single?" + params.toString(), {
-    method: "POST", headers,
-    body: JSON.stringify({
-      cmd: 3101,
-      uplink_body: {batch_pull_singe_chain_uplink_body: {
-        conversation_type: 3, direction: 3, limit: 1,
-        params: ids.map(conversation_id => ({conversation_id})),
-        evaluate_ab_params: "", evaluate_common_params: "", ext: {},
-      }},
-      sequence_id: crypto.randomUUID(), channel: 2, version: "1",
-    }), credentials: "include",
-  });
-  if (!batch.ok) return {ok: true, texts: []};
-  const data = await batch.json();
-  const texts = [];
-  const seen = new Set();
-  const walk = (v) => {
-    if (typeof v === "string") {
-      if ((v.includes("ポイント") || v.includes("积分") || v.toLowerCase().includes("points")
-        || v.includes("上限") || v.includes("limit")) && v.length < 1200 && !seen.has(v)) {
-        seen.add(v); texts.push(v);
-      }
-      try {
-        const t = v.trim();
-        if (t.startsWith("{") || t.startsWith("[")) walk(JSON.parse(t));
-      } catch (e) {}
-      return;
-    }
-    if (!v || typeof v !== "object") return;
-    if (Array.isArray(v)) { for (const x of v) walk(x); return; }
-    for (const x of Object.values(v)) walk(x);
-  };
-  walk(data);
-  return {ok: true, texts: texts.slice(-80)};
-}
-""";
+
+async def _click_first_visible(locator, description: str, timeout: int = 5000):
+    """Waits for and clicks the first visible match instead of a hidden duplicate."""
+    candidate = await _first_visible(locator, description, timeout)
+    await candidate.click(timeout=timeout)
+    return candidate
+
+
+async def _dismiss_cookie_notice(page) -> bool:
+    """Dismisses Dola's optional cookie notice when it covers the composer."""
+    try:
+        body_text = await page.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return False
+    if not re.search(r"cookie|クッキー", body_text, re.IGNORECASE):
+        return False
+    try:
+        await _click_first_visible(
+            page.get_by_role("button", name="OK", exact=True),
+            "cookie notice OK button",
+            timeout=1000,
+        )
+        await page.wait_for_timeout(250)
+        return True
+    except Exception:
+        return False
+
+
+def _submission_prompt(prompt: str, duration: int | None) -> str:
+    """Disambiguate native durations from aspect-ratio text in Dola chat."""
+    if duration in (10, 15):
+        return f"Create a {duration}-second video: {prompt}"
+    # The duration extension attaches 30 seconds through protocol metadata.
+    return prompt
 
 
 def find_captcha_frame(page):
@@ -240,47 +221,8 @@ async def solve_slider(page, frame, attempt: int) -> bool:
 
 
 
-_BALANCE_PATTERNS = (
-    re.compile(r"(?:本日は|今日(?:还剩|剩余)?|今天).*?(\d+)\s*(?:ポイント|积分|points?)", re.I),
-    re.compile(r"(?:remaining|left)\s*[:：]?\s*(\d+)\s*points?", re.I),
-    re.compile(r"(?:还剩|剩余|还有)\s*(\d+)\s*(?:积分|点)", re.I),
-)
-
-
-def _parse_balance_texts(texts: list[str]) -> tuple[int | None, bool, str]:
-    for text in texts:
-        if DAILY_LIMIT_PATTERN.search(text):
-            return None, True, text
-    for text in texts:
-        for pattern in _BALANCE_PATTERNS:
-            match = pattern.search(text)
-            if match:
-                return int(match.group(1)), False, text
-    return None, False, ""
-
-
-async def _preflight_balance(page, ms_token: str, fp: str, required: int) -> dict:
-    """Reads known credit balance from chat history."""
-    try:
-        result = await asyncio.wait_for(page.evaluate(
-            BALANCE_JS, {"msToken": ms_token, "fp": fp}), timeout=30)
-        balance, daily_limited, source = _parse_balance_texts(result.get("texts", []))
-        if daily_limited:
-            raise AccountLimitedError(f"Account daily generation limit: {source[:120]}")
-        if balance is not None and balance < required:
-            raise CreditInsufficientError(
-                f"Insufficient points: current {balance}, required {required} (source: {source[:120]})"
-            )
-        return {"balance": balance, "source": source}
-    except (AccountLimitedError, CreditInsufficientError):
-        raise
-    except Exception as e:
-        print(f"  Balance pre-check indeterminate (proceeding with submit): {str(e)[:120]}", flush=True)
-        return {"balance": None, "source": ""}
-
-
 async def poll_conversation(account: str, page, context, conversation_id: str,
-                            timeout: int, on_poll=None, on_balance=None) -> dict:
+                            timeout: int, on_poll=None) -> dict:
     """Polls accepted conversation for video completion."""
     cookies = await context.cookies("https://www.dola.com")
     ms_token, fp = cookie_value(cookies, "msToken"), cookie_value(cookies, "s_v_web_id")
@@ -299,13 +241,16 @@ async def poll_conversation(account: str, page, context, conversation_id: str,
             on_poll(now)
             last_callback = now
         for text in poll.get("texts", []):
-            balance, _, source = _parse_balance_texts([text])
-            if balance is not None and on_balance:
-                on_balance(balance, source)
-            if DAILY_LIMIT_PATTERN.search(text):
-                raise AccountLimitedError(f"Account daily limit reached: {text[:120]}")
-            if CREDIT_FAIL_PATTERN.search(text):
-                raise CreditError(f"Insufficient quota: {text[:80]}")
+            if VIDEO_NOT_STARTED_PATTERN.search(text):
+                raise RuntimeError(
+                    "Dola did not start video generation and requested a different "
+                    f"duration: {text[:180]}"
+                )
+            classified = error_from_upstream_text(text, pre_generation=True)
+            # Ordinary progress text is intentionally ignored. Only the shared
+            # classifier's explicit outcomes are actionable here.
+            if not isinstance(classified, DolaTemporarilyUnavailableError):
+                raise classified
         if poll.get("videos"):
             video_models = poll.get("videoModels", [])
             url = extract_unwatermarked_url(
@@ -320,7 +265,7 @@ async def poll_conversation(account: str, page, context, conversation_id: str,
 
 
 async def resume_video(account: str, conversation_id: str, timeout: int,
-                       on_poll=None, on_balance=None) -> dict:
+                       on_poll=None) -> dict:
     """Recovers accepted session after server restart without re-sending prompt."""
     async with async_playwright() as p:
         context = await launch_account_context(p, account, headless=False, use_extension=True)
@@ -329,7 +274,7 @@ async def resume_video(account: str, conversation_id: str, timeout: int,
             await page.goto(f"https://www.dola.com/chat/{conversation_id}",
                             timeout=60000, wait_until="domcontentloaded")
             await page.wait_for_timeout(5000)
-            return await poll_conversation(account, page, context, conversation_id, timeout, on_poll, on_balance)
+            return await poll_conversation(account, page, context, conversation_id, timeout, on_poll)
         finally:
             await context.close()
 
@@ -337,7 +282,7 @@ async def resume_video(account: str, conversation_id: str, timeout: int,
 async def generate_video(account: str, prompt: str, ratio: str = None,
                          duration: int = None, timeout: int = None,
                          model: str = "seedance_v2.0", use_extension: bool = True,
-                         on_conversation_id=None, on_poll=None, on_balance=None,
+                         on_conversation_id=None, on_poll=None,
                          reference_image_paths: list[str] | None = None) -> dict:
     """Full generation flow via UI automation."""
     timeout = timeout or config.VIDEO_TIMEOUT
@@ -365,10 +310,7 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto("https://www.dola.com/chat", timeout=60000, wait_until="domcontentloaded")
             await page.wait_for_timeout(5000)
-            cookies = await context.cookies("https://www.dola.com")
-            ms_token, fp = cookie_value(cookies, "msToken"), cookie_value(cookies, "s_v_web_id")
-            await _preflight_balance(page, ms_token, fp, config.VIDEO_REQUIRED_POINTS)
-
+            await _dismiss_cookie_notice(page)
             # ---- UI Submission ----
             await page.click(VIDEO_BTN)
             await page.wait_for_timeout(1500)
@@ -376,26 +318,24 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
                 await attach_reference_images(page, reference_image_paths)
             # Select model in UI
             try:
-                current_model = None
-                for label in ("モデル 2.0高速", "モデル 2.5"):
-                    loc = page.get_by_text(label, exact=True).first
-                    if await loc.count() and await loc.is_visible():
-                        current_model = loc
-                        break
-                if current_model is None:
-                    current_model = page.get_by_text(re.compile(r"^モデル "), exact=False).first
-                await current_model.click(timeout=5000)
+                await _click_first_visible(
+                    page.get_by_role("button", name=re.compile(r"^モデル")),
+                    "model button",
+                    timeout=15000,
+                )
                 await page.wait_for_timeout(500)
                 options = (("Dreamina Seedance 2.5",)
                            if model_key == "seedance_v2.5"
                            else ("Dreamina Seedance 2.0高速", "Dreamina Seedance 2.0", "Seedance2.0Fast"))
                 selected = False
                 for option_text in options:
-                    loc = page.get_by_text(option_text, exact=False).first
-                    if await loc.count() and await loc.is_visible():
-                        await loc.click(timeout=5000)
+                    loc = page.get_by_role("menuitem").filter(has_text=option_text)
+                    try:
+                        await _click_first_visible(loc, f"model option {option_text}")
                         selected = True
                         break
+                    except RuntimeError:
+                        continue
                 if not selected:
                     raise RuntimeError("Model option not found")
                 await page.wait_for_timeout(500)
@@ -403,50 +343,79 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
                 raise RuntimeError(f"Failed to set model ({model_key}): {str(e)[:120]}") from e
             if ratio:
                 try:
-                    await page.click("text=比率", timeout=3000)
+                    await _click_first_visible(
+                        page.get_by_role("button", name="比率", exact=True),
+                        "ratio button",
+                        timeout=3000,
+                    )
                     await page.wait_for_timeout(500)
-                    await page.click(f"text={ratio}", timeout=3000)
+                    await _click_first_visible(
+                        page.get_by_role("menuitem", name=ratio, exact=True),
+                        f"ratio option {ratio}",
+                        timeout=3000,
+                    )
                 except Exception as e:
                     print(f"  (Failed to set ratio, using default: {str(e)[:80]})", flush=True)
             if duration:
                 try:
-                    await page.click(f"text={duration}s", timeout=3000)
-                except Exception:
-                    try:  # Open duration dropdown
-                        await page.get_by_text(re.compile(r"^\d+s$")).first.click(timeout=3000)
+                    duration_label = f"{duration}s"
+                    duration_button = page.get_by_role(
+                        "button", name=re.compile(r"^\d+s$"))
+                    current = await _first_visible(
+                        duration_button, "duration button", timeout=5000)
+                    # Clicking the already-selected value only opens the menu and
+                    # leaves it covering the editor. Skip that click entirely.
+                    if (await current.inner_text()).strip() != duration_label:
+                        await current.click(timeout=3000)
                         await page.wait_for_timeout(500)
-                        await page.click(f"text={duration}s", timeout=3000)
-                    except Exception as e:
-                        print(f"  (Failed to set duration, using default: {str(e)[:80]})", flush=True)
+                        await _click_first_visible(
+                            page.get_by_role("menuitem", name=duration_label, exact=True),
+                            f"duration option {duration_label}",
+                            timeout=3000,
+                        )
+                        await page.wait_for_timeout(500)
+                    selected_duration_button = await _first_visible(
+                        duration_button, "selected duration button", timeout=5000)
+                    selected_duration = (await selected_duration_button.inner_text()).strip()
+                    if selected_duration != duration_label:
+                        raise RuntimeError(
+                            f"Duration selection did not stick (wanted {duration_label}, "
+                            f"got {selected_duration or 'no visible value'})"
+                        )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to set requested duration {duration}s: {str(e)[:120]}"
+                    ) from e
+            await page.keyboard.press("Escape")
             box = await page.query_selector("textarea") or await page.query_selector('[contenteditable="true"]')
+            if box is None:
+                raise RuntimeError("Prompt editor not found")
             await box.click()
-            await page.keyboard.type(prompt, delay=100)
+            submitted_prompt = _submission_prompt(prompt, duration)
+            await page.keyboard.type(submitted_prompt, delay=100)
             await page.wait_for_timeout(600)
             await page.keyboard.press("Enter")
-            print(f"[{account}] UI submitted prompt: {prompt[:40]}", flush=True)
+            print(f"[{account}] UI submitted prompt: {submitted_prompt[:60]}", flush=True)
 
-            # ---- Captcha Solver (up to 3 attempts) ----
-            solved_or_absent = False
-            for attempt in range(1, 4):
-                frame = None
-                for _ in range(20):
+            # ---- Manual verification only; never automate Dola's challenge ----
+            frame = None
+            for _ in range(20):
+                await page.wait_for_timeout(1000)
+                frame = find_captcha_frame(page)
+                if frame:
+                    break
+            if frame:
+                print(
+                    f"[{account}] Dola verification is waiting in Chromium; "
+                    "complete it manually to continue",
+                    flush=True,
+                )
+                deadline = time.monotonic() + config.VIDEO_VERIFICATION_TIMEOUT
+                while find_captcha_frame(page) and time.monotonic() < deadline:
                     await page.wait_for_timeout(1000)
-                    frame = find_captcha_frame(page)
-                    if frame:
-                        break
-                if not frame:
-                    solved_or_absent = True
-                    break
-                print(f"[{account}] Captcha detected, attempt {attempt} solving...", flush=True)
-                if await solve_slider(page, frame, attempt):
-                    print(f"[{account}] Captcha passed ✓", flush=True)
-                    await page.wait_for_timeout(3000)  # Wait for frontend auto-retry
-                    solved_or_absent = True
-                    break
-                print(f"[{account}] Captcha not passed, retrying...", flush=True)
-            if not solved_or_absent:
-                await page.screenshot(path="solve_fail.png")
-                raise RiskControlError("Captcha failed 3 times")
+                if find_captcha_frame(page):
+                    raise VerificationRequiredError("Manual Dola verification timed out")
+                await page.wait_for_timeout(3000)
 
             # ---- Wait for real conversation_id ----
             conv_id = ""
@@ -464,7 +433,7 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
             deadline = time.time() + timeout
             if on_conversation_id:
                 on_conversation_id(account, conv_id, deadline)
-            return await poll_conversation(account, page, context, conv_id, timeout, on_poll, on_balance)
+            return await poll_conversation(account, page, context, conv_id, timeout, on_poll)
         finally:
             await context.close()
 

@@ -12,6 +12,12 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode, quote
 
 import aiohttp
+from upstream_errors import (
+    DolaTemporarilyUnavailableError,
+    ExplicitRestrictionError,
+    PromptContentRejectedError,
+    error_from_upstream_text,
+)
 
 # ============ Constants ============
 
@@ -841,10 +847,16 @@ class DolaClient:
                             continue
 
                         for block in content:
-                            # Check for quota limit text
+                            # Only explicit upstream outcomes are actionable.
                             block_text = (block.get("content") or {}).get("text_block", {}).get("text", "")
-                            if block_text and CREDIT_FAIL_PATTERN.search(block_text):
-                                raise CreditError(f"Insufficient quota: {block_text[:60]}")
+                            if block_text:
+                                classified = error_from_upstream_text(
+                                    block_text, pre_generation=True
+                                )
+                                if not isinstance(
+                                    classified, DolaTemporarilyUnavailableError
+                                ):
+                                    raise classified
 
                             # Check for video output (block_type=2074, type=2)
                             if block.get("block_type") != 2074:
@@ -856,7 +868,8 @@ class DolaClient:
                                 url = (cre.get("video") or {}).get("download_url", "")
                                 if url and url.startswith("http"):
                                     return url
-                except CreditError:
+                except (CreditError, ExplicitRestrictionError,
+                        PromptContentRejectedError):
                     raise
                 except Exception:
                     pass
