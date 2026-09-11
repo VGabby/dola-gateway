@@ -224,7 +224,8 @@ def build_desktop(
         raise BuildError(
             f"runtime target {manifest['target']} does not match installer target {target}"
         )
-    if not shutil.which("npm"):
+    npm = shutil.which("npm")
+    if not npm:
         raise BuildError("npm is required on the release builder")
     if not shutil.which("rustup"):
         raise BuildError("rustup is required on the release builder")
@@ -241,10 +242,10 @@ def build_desktop(
     shutil.copytree(runtime, stage_root / "runtime", symlinks=True)
 
     try:
-        _run(["npm", "ci", "--ignore-scripts"], cwd=stage_root)
+        _run([npm, "ci", "--ignore-scripts"], cwd=stage_root)
         bundles = "app,dmg" if target == "macos-arm64" else "nsis"
         _run(
-            ["npm", "run", "tauri", "--", "build", "--bundles", bundles],
+            [npm, "run", "tauri", "--", "build", "--bundles", bundles],
             cwd=stage_root,
             env=_builder_environment(),
         )
