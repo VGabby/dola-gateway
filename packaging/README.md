@@ -43,6 +43,23 @@ python packaging/desktop/build_runtime.py `
 python packaging/desktop/build_desktop.py --target windows-x64
 ```
 
+## GitHub Actions Windows build
+
+`.github/workflows/windows-release.yml` builds the self-contained Windows x64
+NSIS installer on a native GitHub-hosted Windows runner. It can be started
+manually from the Actions page or by pushing a `v*` tag. The workflow has
+read-only repository permissions, uses no application credentials, and does
+not perform a live Dola generation.
+
+Every successful run uploads one 14-day workflow artifact containing the NSIS
+`.exe`, its `.sha256` file, and `build-metadata.json`. It does not publish a
+GitHub Release. Download the artifact and complete the clean-machine acceptance
+checklist below before sharing it.
+
+The workflow currently produces the installer only. The older
+`packaging/windows/` ZIP is bootstrap scaffolding that expects recipient-side
+Python and must not be labeled as the self-contained portable build.
+
 `build_runtime.py` permits a tiny `--fixture` tree only for offline tests.
 `build_desktop.py` always rejects fixture runtimes. The installer builder stages
 a clean shell copy under ignored `dist/desktop-build/`, injects the verified

@@ -11,6 +11,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = PROJECT_ROOT / "packaging" / "desktop" / "build_runtime.py"
+WINDOWS_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "windows-release.yml"
 
 
 def load_builder():
@@ -73,6 +74,25 @@ def test_desktop_icon_set_is_declared_and_contains_native_formats():
     assert all((icon_root / relative).is_file() for relative in expected)
     assert (icon_root / "icons" / "icon.icns").read_bytes()[:4] == b"icns"
     assert (icon_root / "icons" / "icon.ico").read_bytes()[:4] == b"\x00\x00\x01\x00"
+
+
+def test_windows_release_workflow_uses_native_verified_build_without_secrets():
+    workflow = WINDOWS_WORKFLOW.read_text(encoding="utf-8")
+    assert "runs-on: windows-latest" in workflow
+    assert "permissions:\n  contents: read" in workflow
+    assert "packaging/check_release.py" in workflow
+    assert "packaging/desktop/build_runtime.py" in workflow
+    assert "--target windows-x64" in workflow
+    assert "--smoke" in workflow
+    assert "packaging/desktop/build_desktop.py --target windows-x64" in workflow
+    assert "actions/upload-artifact@v7" in workflow
+    assert "dist/desktop-installers/windows-x64/*.exe" in workflow
+    assert "dist/desktop-installers/windows-x64/*.sha256" in workflow
+    assert "build-metadata.json" in workflow
+    assert "secrets." not in workflow
+    assert "DOLA_API_KEYS" not in workflow
+    assert "DOLA_ADMIN_KEY" not in workflow
+    assert "gh release" not in workflow
 
 
 def test_offline_fixture_build_has_verified_contained_manifest(tmp_path):

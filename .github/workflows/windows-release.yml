@@ -1,0 +1,149 @@
+name: Build Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows-x64:
+    name: Windows x64 NSIS installer
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      CARGO_TERM_COLOR: always
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          architecture: x64
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          architecture: x64
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.1"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Rust 1.88
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+          rustc --version
+          cargo --version
+
+      - name: Check release inputs
+        run: python packaging/check_release.py
+
+      - name: Run packaging tests
+        run: >-
+          uv run --frozen --with pytest pytest -q
+          tests/test_packaging.py
+          tests/test_desktop_packaging.py
+
+      - name: Build and smoke-test bundled runtime
+        run: >-
+          python packaging/desktop/build_runtime.py
+          --target windows-x64
+          --output dist/desktop-runtime/windows-x64
+          --force
+          --smoke
+
+      - name: Build NSIS installer
+        run: python packaging/desktop/build_desktop.py --target windows-x64
+
+      - name: Verify release outputs
+        run: |
+          $releaseDir = Join-Path $env:GITHUB_WORKSPACE "dist\desktop-installers\windows-x64"
+          $installers = @(Get-ChildItem -Path $releaseDir -Filter "*.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one Windows installer, found $($installers.Count)"
+          }
+
+          $installer = $installers[0]
+          $checksumPath = "$($installer.FullName).sha256"
+          $metadataPath = Join-Path $releaseDir "build-metadata.json"
+          if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf)) {
+            throw "Missing installer checksum: $checksumPath"
+          }
+          if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+            throw "Missing build metadata: $metadataPath"
+          }
+
+          $expectedHash = ((Get-Content -LiteralPath $checksumPath -Raw).Trim() -split "\s+")[0].ToLowerInvariant()
+          $actualHash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "Installer SHA-256 does not match its checksum file"
+          }
+
+          $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+          $version = (Get-Content -LiteralPath "VERSION" -Raw).Trim()
+          if ($metadata.target -ne "windows-x64") {
+            throw "Unexpected build target in metadata: $($metadata.target)"
+          }
+          if ($metadata.application_version -ne $version) {
+            throw "Metadata version $($metadata.application_version) does not match VERSION $version"
+          }
+          if ($metadata.signed_for_distribution -ne $false) {
+            throw "Unsigned workflow unexpectedly reported a signed artifact"
+          }
+          if ($metadata.post_bundle_verification -notcontains "NSIS PE header") {
+            throw "Windows post-bundle verification was not recorded"
+          }
+
+          "installer=$($installer.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "sha256=$actualHash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        id: verify
+
+      - name: Upload Windows release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dola-gateway-${{ github.ref_name }}-windows-x64-${{ github.run_number }}
+          path: |
+            dist/desktop-installers/windows-x64/*.exe
+            dist/desktop-installers/windows-x64/*.sha256
+            dist/desktop-installers/windows-x64/build-metadata.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Publish build summary
+        run: |
+          @"
+          ## Windows release artifact
+
+          - Installer: ``${{ steps.verify.outputs.installer }}``
+          - SHA-256: ``${{ steps.verify.outputs.sha256 }}``
+          - Target: ``windows-x64``
+          - Signing: unsigned test build
+
+          Download the artifact from this workflow run and complete the clean-machine acceptance checklist in ``packaging/README.md``.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
