@@ -182,13 +182,14 @@ def test_manifest_tree_hashes_detect_runtime_tampering(tmp_path):
 
 def test_installer_builder_rejects_fixture_runtime_before_packaging(tmp_path):
     builder = load_builder()
-    output = builder.build_runtime("macos-arm64", tmp_path / "runtime", fixture=True)
+    target = builder.native_target()
+    output = builder.build_runtime(target, tmp_path / "runtime", fixture=True)
     installer = subprocess.run(
         [
             sys.executable,
             str(PROJECT_ROOT / "packaging" / "desktop" / "build_desktop.py"),
             "--target",
-            "macos-arm64",
+            target,
             "--runtime",
             str(output),
             "--output",
