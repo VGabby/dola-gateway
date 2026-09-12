@@ -35,9 +35,9 @@ jobs:
       CARGO_TERM_COLOR: always
       DOLA_ADMIN_KEY: ""
       DOLA_API_KEYS: ""
-      DOLA_ENV_FILE: ${{ runner.temp }}/dola-gateway-no-env
+      DOLA_ENV_FILE: ${{ github.workspace }}/.ci/dola-gateway-no-env
       DOLA_PROXY: ""
-      DOLA_STATE_DIR: ${{ runner.temp }}/dola-gateway-state
+      DOLA_STATE_DIR: ${{ github.workspace }}/.ci/dola-gateway-state
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUTF8: "1"
 

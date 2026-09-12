@@ -4,6 +4,10 @@ All notable changes to Dola Gateway are documented here.
 
 ## [Unreleased]
 
+## [0.2.2-rc.2] - 2026-09-12
+
+- Corrected GitHub Actions environment isolation paths for workflow validation.
+
 ## [0.2.2-rc.1] - 2026-09-12
 
 - Refactored the runtime into the `dola_gateway` package and removed obsolete protocol paths.

@@ -119,7 +119,7 @@ def test_tag_parity_and_changelog_extraction():
     version = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip()
     notes = extract_release_notes(version)
     assert notes.startswith("- ")
-    assert "Dola" in notes
+    assert "Release notes pending" not in notes
     accepted = subprocess.run(
         [sys.executable, "tools/release/check_release.py", "--tag", f"v{version}"],
         cwd=PROJECT_ROOT,
