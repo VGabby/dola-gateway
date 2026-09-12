@@ -1,4 +1,4 @@
-"""Privacy-conscious diagnostics for the trusted-friend desktop application."""
+"""Privacy-conscious diagnostics for the Dola Gateway desktop application."""
 
 from __future__ import annotations
 

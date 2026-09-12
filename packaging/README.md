@@ -12,7 +12,7 @@ instead of fetching it on the recipient's machine.
 | Target | Build host | Installer | Status in this repository |
 | --- | --- | --- | --- |
 | `macos-arm64` | Apple Silicon macOS | `.dmg` plus `.app` QA copy | Code and native artifact complete; clean-machine UI acceptance remains manual |
-| `windows-x64` | x64 Windows | per-user NSIS `.exe` | Code/scaffolding complete; native Windows build and acceptance still required |
+| `windows-x64` | x64 Windows | per-user NSIS `.exe` | Native GitHub Actions build, runtime smoke test, installer verification, and artifact upload pass; clean-machine UI acceptance remains manual |
 
 There is no Linux target and no background service installation. Production
 cross-builds are rejected. Updates are manual and preserve the external state
@@ -56,9 +56,8 @@ Every successful run uploads one 14-day workflow artifact containing the NSIS
 GitHub Release. Download the artifact and complete the clean-machine acceptance
 checklist below before sharing it.
 
-The workflow currently produces the installer only. The older
-`packaging/windows/` ZIP is bootstrap scaffolding that expects recipient-side
-Python and must not be labeled as the self-contained portable build.
+The workflow currently produces the installer only. A portable Windows build is
+not part of the supported release surface.
 
 `build_runtime.py` permits a tiny `--fixture` tree only for offline tests.
 `build_desktop.py` always rejects fixture runtimes. The installer builder stages
@@ -119,15 +118,10 @@ On a clean machine with no Python, Node, Rust, or Chrome installed:
 Do not use a real Dola generation merely as an installer smoke test. Account and
 generation acceptance is a deliberate manual test by the recipient.
 
-## Signing and legacy packaging
+## Signing
 
 Current builds are unsigned for distribution. macOS uses an ad-hoc signature
 only for bundle consistency and is not notarized; Windows NSIS output is not
 Authenticode signed. Trusted users may need to use the operating system's manual
 override. Public distribution requires Developer ID/notarization and
 Authenticode signing outside this scope.
-
-The older `packaging/build_release.py`, `packaging/macos/`, and
-`packaging/windows/` paths remain as bootstrap/portable scaffolding. They are not
-the self-contained desktop deliverable because they may require Python or fetch
-runtime components after delivery.

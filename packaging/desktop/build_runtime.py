@@ -146,6 +146,31 @@ def load_allowlist(path: Path = ALLOWLIST_PATH) -> list[Path]:
     return result
 
 
+def verify_application_inputs() -> list[Path]:
+    """Validate the exact source files copied into a desktop runtime."""
+    paths = load_allowlist()
+    text_suffixes = {".html", ".js", ".json", ".md", ".py"}
+    for relative in paths:
+        source = PROJECT_ROOT / relative
+        body: str | None = None
+        if source.suffix.casefold() in text_suffixes or source.name == "VERSION":
+            try:
+                body = source.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise BuildError(f"application source is not UTF-8: {relative}") from exc
+        if source.suffix.casefold() == ".json":
+            try:
+                json.loads(body if body is not None else source.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise BuildError(f"invalid JSON application source: {relative}: {exc}") from exc
+        leaks = _scan_text(source)
+        if leaks:
+            raise BuildError(
+                f"sensitive content in application source {relative}: {', '.join(leaks)}"
+            )
+    return paths
+
+
 def _inside(root: Path, candidate: Path) -> bool:
     try:
         candidate.relative_to(root)
@@ -276,7 +301,7 @@ def _find_candidate(root: Path, candidates: Iterable[str], *, label: str) -> Pat
 
 
 def _copy_application(destination: Path) -> None:
-    for relative in load_allowlist():
+    for relative in verify_application_inputs():
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT_ROOT / relative, target)

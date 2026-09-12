@@ -75,13 +75,16 @@ def test_generated_image_selection_returns_every_unique_full_size_result():
     ]
 
 
-def test_dashboard_displays_image_tasks_and_results():
-    html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text()
-    assert "t.media_type==='image'" in html
-    assert "t.image_url" in html
-    assert "previewImage" in html
-    assert "Dola Quota Unknown" in html
-    assert "Remaining Today" not in html
+def test_application_displays_every_generated_image_result():
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "playground.html"
+    ).read_text(encoding="utf-8")
+
+    assert "task.media_type==='image'" in html
+    assert "task.image_urls||[]" in html
+    assert "fetchResultBlob(task.id,index)" in html
+    assert "renderGallery(task,items)" in html
+    assert "Download" in html
 
 
 def test_image_scheduler_requires_verified_login(monkeypatch, tmp_path):

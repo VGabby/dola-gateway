@@ -2,43 +2,29 @@
 
 from __future__ import annotations
 
-import json
-import os
 import asyncio
+import os
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
-
-from account_config import load_accounts
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_all_python_sources_compile():
-    sources = [p for p in ROOT.rglob("*.py") if ".venv" not in p.parts]
+    ignored = {
+        ".venv",
+        ".venv-moved-backup",
+        "accounts",
+        "dist",
+        "downloads",
+        "node_modules",
+        "target",
+    }
+    sources = [p for p in ROOT.rglob("*.py") if not ignored.intersection(p.parts)]
     for source in sources:
         compile(source.read_text(encoding="utf-8"), str(source), "exec")
-
-
-def test_account_example_is_valid_and_credential_free():
-    accounts = load_accounts(ROOT / "accounts.local.json.example")
-    assert [account.name for account in accounts] == ["dola-01", "dola-02"]
-    assert all(account.enabled for account in accounts)
-
-
-def test_account_config_accepts_windows_utf8_bom(tmp_path):
-    path = tmp_path / "accounts.json"
-    path.write_text('{"accounts":[]}', encoding="utf-8-sig")
-    assert load_accounts(path) == []
-
-
-def test_account_config_rejects_credentials(tmp_path):
-    path = tmp_path / "accounts.json"
-    path.write_text(json.dumps({"accounts": [{"name": "acc1", "password": "secret"}]}))
-    with pytest.raises(ValueError, match="credential fields"):
-        load_accounts(path)
 
 
 def test_config_defaults_to_local_bind(monkeypatch):

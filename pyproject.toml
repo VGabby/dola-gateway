@@ -21,7 +21,6 @@ dependencies = [
 
 [tool.setuptools]
 py-modules = [
-  "account_config",
   "add_account",
   "app_version",
   "browser",

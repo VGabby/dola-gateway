@@ -1,7 +1,7 @@
 [package]
 name = "dola-gateway-desktop"
 version = "0.2.1"
-description = "Trusted-friend desktop shell for Dola Gateway"
+description = "Native desktop shell for Dola Gateway"
 edition = "2021"
 rust-version = "1.88"
 

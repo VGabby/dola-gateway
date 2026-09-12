@@ -24,6 +24,7 @@ dist/
 /*.json
 /*.txt
 !requirements.txt
+!requirements-dev.txt
 !README.md
 
 # --- one-off debug script (contains a signed CDN url) ---
@@ -32,6 +33,8 @@ dl_now.py
 # --- python ---
 __pycache__/
 .venv/
+.venv-moved-backup/
+.pytest_cache/
 *.pyc
 *.egg-info/
 

@@ -1,7 +1,6 @@
 # Repository-relative backend and UI files embedded in the desktop runtime.
 # Mutable state, credentials, developer environments, and generated media are
 # intentionally absent. Keep this list explicit.
-account_config.py
 add_account.py
 app_version.py
 browser.py
@@ -21,7 +20,6 @@ video_worker.py
 video_worker_ui.py
 VERSION
 
-web/index.html
 web/playground.html
 
 extensions/dola30/README.md

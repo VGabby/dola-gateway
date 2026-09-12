@@ -1,13 +1,13 @@
-# Video Generation Gateway - Architecture & Technical Notes
+# Dola Gateway development notes
 
 Technical reference for the service architecture, profile coordination, and task pipeline.
 
 ---
 
-## 1. Core Architecture
+## 1. Core architecture
 
 The system operates across three tiers:
-1. **API Tier (`server.py`)**: FastAPI application exposing standard OpenAI video endpoints (`/v1/videos/generations`, `/v1/videos/<id>`) and web dashboard routes (`/web`, `/api/admin/*`).
+1. **API tier (`server.py`)**: FastAPI application exposing OpenAI-compatible image and video endpoints, the unified application at `/`, the focused workspace at `/playground`, and authenticated administration routes under `/api/admin/*`.
 2. **Pool Management Tier (`browser_pool.py`)**: Manages persistent browser profiles in `accounts/`, controlling task concurrency, account locking, observed usage, and media-specific persistent restrictions after explicit upstream responses. Restrictions have no assumed reset time and can be tested only by a confirmed, real, pinned generation from the Accounts page. Content rejection and ambiguous errors never restrict an account.
 3. **Execution Tier (`video_worker_ui.py`, `video_worker.py`)**:
    - **UI Automation Mode**: Automates browser interactions, authenticates via persistent browser session, injects prompts, and handles verification challenges.
@@ -37,8 +37,8 @@ The system operates across three tiers:
 
 ## 5. Application and release boundary
 
-`server:app` remains the compatibility entry point used by launchers and local
-development. The installed app opens `/`, the unified owner interface, while
+`server:app` is the application entry point used by local development and the
+desktop runtime. The installed app opens `/`, the unified administration interface, while
 `/playground` remains a focused client workspace and the API routes remain stable.
 
 Application code and mutable state are deliberately separate. `DOLA_STATE_DIR`
@@ -68,7 +68,7 @@ launches the bundled full Chromium against an offline page. The installer build
 accepts only a non-fixture verified runtime. See `packaging/README.md` for the
 exact tool prerequisites and clean-machine acceptance testing.
 
-`packaging/build_release.py`, `packaging/macos/`, and `packaging/windows/` are
-the earlier bootstrap/portable packaging path. They remain for compatibility
-but are not a self-contained trusted-friend desktop release: those launchers may
-download runtime components or require developer prerequisites after delivery.
+The supported packaging surface is intentionally small: `packaging/check_release.py`
+validates the source payload, while `packaging/desktop/build_runtime.py` and
+`packaging/desktop/build_desktop.py` create the native runtime and installer.
+Obsolete bootstrap packages and launchers are not maintained.

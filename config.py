@@ -83,9 +83,6 @@ if DESKTOP_MODE and HOST not in {"127.0.0.1", "localhost", "::1"}:
 # Service API keys (comma-separated; empty = no auth, local debug only)
 API_KEYS = [k.strip() for k in os.getenv("DOLA_API_KEYS", "").split(",") if k.strip()]
 
-# Account pool cookie file (one dola.com cookie per line)
-COOKIES_FILE = _state_path("DOLA_COOKIES_FILE", "cookies.txt")
-
 # Max concurrent video generation tasks
 MAX_CONCURRENCY = int(os.getenv("DOLA_MAX_CONCURRENCY", "3"))
 
@@ -116,8 +113,8 @@ PROXY = os.getenv("DOLA_PROXY", "")
 # Optional browser override. Empty uses Patchright's bundled Chromium.
 BROWSER_EXECUTABLE = os.getenv("DOLA_BROWSER_EXECUTABLE", "")
 
-# Credential-free account metadata file. Login sessions stay in accounts/<name>/.
-ACCOUNTS_CONFIG = _state_path("DOLA_ACCOUNTS_CONFIG", "accounts.local.json")
+# Each direct child directory is one isolated browser profile. Account labels and
+# scheduling metadata live in POOL_DB_PATH; there is no separate account config.
 ACCOUNTS_DIR = _state_path("DOLA_ACCOUNTS_DIR", "accounts")
 
 # The desktop supervisor owns these paths.  Keeping them configurable makes
@@ -162,13 +159,11 @@ if DESKTOP_MODE:
         Path(SUPPORT_DIR),
         Path(DB_PATH).parent,
         Path(POOL_DB_PATH).parent,
-        Path(ACCOUNTS_CONFIG).parent,
     ):
         _protect_directory(_private_dir)
     for _private_file in (
         Path(DB_PATH),
         Path(POOL_DB_PATH),
-        Path(ACCOUNTS_CONFIG),
         STATE_DIR / ".env.local",
     ):
         _protect_file(_private_file)

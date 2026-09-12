@@ -62,15 +62,18 @@ def test_account_api_schema_rejects_credentials(monkeypatch, tmp_path):
             server.AccountAdd.model_validate({"name": "dola-01", field: "secret"})
 
 
-def test_dashboard_uses_manual_google_fields_and_readable_api_errors():
-    html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text()
-    assert "Open Google Login" in html
-    assert 'id="f_pass"' not in html
-    assert 'id="f_totp"' not in html
-    assert "apiErrorMessage" in html
-    assert "knownAccountNames" in html
-    assert "Cancel Login" in html
-    assert "submitAddAccount(this)" in html
+def test_application_uses_manual_google_login_without_collecting_credentials():
+    html = (
+        Path(__file__).resolve().parents[1] / "web" / "playground.html"
+    ).read_text(encoding="utf-8")
+
+    assert "A visible Chromium window will open for Google sign-in." in html
+    assert 'id="newAccountName"' in html
+    assert 'id="newAccountEmail"' in html
+    assert "'Open sign-in'" in html
+    assert "body:{name,email:$('newAccountEmail').value.trim()}" in html
+    assert "newAccountPassword" not in html
+    assert "newAccountTotp" not in html
 
 
 def test_add_job_calls_manual_flow_without_credentials(monkeypatch, tmp_path):
