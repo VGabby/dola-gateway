@@ -82,13 +82,8 @@ jobs:
             uv run --frozen python tools/release/check_release.py
           fi
 
-      - name: Run offline release regression suite
-        run: >-
-          uv run --frozen pytest -q
-          tests/test_packaging.py
-          tests/test_desktop_packaging.py
-          tests/test_version_tooling.py
-          tests/test_release_manifest.py
+      - name: Run full offline regression suite
+        run: uv run --frozen pytest -q
 
       - name: Build and smoke-test runtime
         run: >-

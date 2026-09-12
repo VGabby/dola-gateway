@@ -188,7 +188,10 @@ def test_store_separates_image_recovery_from_video(tmp_path):
 
 def _load_server(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DOLA_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("DOLA_DB_PATH", str(tmp_path / "tasks.db"))
+    monkeypatch.setenv("DOLA_POOL_DB_PATH", str(tmp_path / "pool.db"))
+    monkeypatch.setenv("DOLA_ACCOUNTS_DIR", str(tmp_path / "accounts"))
     monkeypatch.setenv("DOLA_DOWNLOAD_DIR", str(tmp_path / "downloads"))
     monkeypatch.setenv("DOLA_IMAGE_DIR", str(tmp_path / "images"))
     monkeypatch.setenv("DOLA_PUBLIC_BASE", "http://testserver")

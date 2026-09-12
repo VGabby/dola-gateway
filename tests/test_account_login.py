@@ -36,7 +36,10 @@ def test_session_detector_requires_nonempty_sessionid():
 
 def _load_server(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DOLA_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("DOLA_DB_PATH", str(tmp_path / "tasks.db"))
+    monkeypatch.setenv("DOLA_POOL_DB_PATH", str(tmp_path / "pool.db"))
+    monkeypatch.setenv("DOLA_ACCOUNTS_DIR", str(tmp_path / "accounts"))
     monkeypatch.setenv("DOLA_DOWNLOAD_DIR", str(tmp_path / "downloads"))
     monkeypatch.setenv("DOLA_PROXY", "")
     monkeypatch.setenv("DOLA_ADMIN_KEY", "")

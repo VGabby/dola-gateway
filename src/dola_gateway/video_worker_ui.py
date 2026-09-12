@@ -265,7 +265,6 @@ async def resume_video(account: str, conversation_id: str, timeout: int,
         finally:
             await context.close()
 
-
 async def generate_video(account: str, prompt: str, ratio: str = None,
                          duration: int = None, timeout: int = None,
                          model: str = "seedance_v2.0", use_extension: bool = True,
@@ -423,4 +422,3 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
             return await poll_conversation(account, page, context, conv_id, timeout, on_poll)
         finally:
             await context.close()
-
