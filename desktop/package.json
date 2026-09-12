@@ -1,7 +1,7 @@
 {
   "name": "dola-gateway-desktop-build",
   "private": true,
-  "version": "0.2.2-rc.2",
+  "version": "0.2.2",
   "scripts": {
     "tauri": "tauri"
   },

@@ -4,6 +4,13 @@ All notable changes to Dola Gateway are documented here.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-12
+
+- Packaged the Python runtime under `dola_gateway` and removed obsolete protocol paths.
+- Reduced the bundled extension to Dola-only 10/15/30-second duration behavior with least privileges.
+- Added strict SemVer propagation, deterministic release metadata, and offline release validation.
+- Added gated unsigned macOS ARM64 DMG and Windows x64 NSIS builds with normalized names and checksums.
+
 ## [0.2.2-rc.2] - 2026-09-12
 
 - Corrected GitHub Actions environment isolation paths for workflow validation.

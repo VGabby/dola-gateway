@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "dola-gateway-desktop"
-version = "0.2.2-rc.2"
+version = "0.2.2"
 dependencies = [
  "libc",
  "open",
