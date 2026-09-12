@@ -1,0 +1,27 @@
+# Repository-relative application files embedded in the desktop runtime.
+# Mutable state, credentials, developer environments, and generated media are
+# intentionally absent. Keep this list explicit.
+src/dola_gateway/__init__.py
+src/dola_gateway/VERSION
+src/dola_gateway/add_account.py
+src/dola_gateway/app_version.py
+src/dola_gateway/browser.py
+src/dola_gateway/browser_pool.py
+src/dola_gateway/config.py
+src/dola_gateway/desktop_entry.py
+src/dola_gateway/desktop_support.py
+src/dola_gateway/gap.py
+src/dola_gateway/image_worker.py
+src/dola_gateway/media.py
+src/dola_gateway/server.py
+src/dola_gateway/store.py
+src/dola_gateway/upstream_errors.py
+src/dola_gateway/video_protocol.py
+src/dola_gateway/video_worker_ui.py
+
+src/dola_gateway/web/playground.html
+
+src/dola_gateway/extensions/dola30/README.md
+src/dola_gateway/extensions/dola30/manifest.json
+src/dola_gateway/extensions/dola30/service-worker.js
+src/dola_gateway/extensions/dola30/duration-patch.js

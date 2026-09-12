@@ -45,10 +45,10 @@ __pycache__/
 desktop/node_modules/
 desktop/src-tauri/gen/
 desktop/src-tauri/target/
-desktop/runtime/app/
-desktop/runtime/python/
-desktop/runtime/browsers/
-desktop/runtime/.build/
+desktop/runtime-placeholder/app/
+desktop/runtime-placeholder/python/
+desktop/runtime-placeholder/browsers/
+desktop/runtime-placeholder/.build/
 
 # --- unused Tauri mobile / Store icon derivatives ---
 desktop/src-tauri/icons/64x64.png

@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from add_account import has_dola_session
+from dola_gateway.add_account import has_dola_session
 
 
 class FakeContext:
@@ -41,8 +41,7 @@ def _load_server(monkeypatch, tmp_path):
     monkeypatch.setenv("DOLA_PROXY", "")
     monkeypatch.setenv("DOLA_ADMIN_KEY", "")
 
-    import config
-    import server
+    from dola_gateway import config, server
 
     importlib.reload(config)
     return importlib.reload(server)
@@ -64,7 +63,11 @@ def test_account_api_schema_rejects_credentials(monkeypatch, tmp_path):
 
 def test_application_uses_manual_google_login_without_collecting_credentials():
     html = (
-        Path(__file__).resolve().parents[1] / "web" / "playground.html"
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "dola_gateway"
+        / "web"
+        / "playground.html"
     ).read_text(encoding="utf-8")
 
     assert "A visible Chromium window will open for Google sign-in." in html

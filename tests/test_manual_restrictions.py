@@ -11,18 +11,15 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from browser_pool import BrowserPool
-from dola_client import CreditError
-from store import TaskStore
-from upstream_errors import (
+from dola_gateway.browser_pool import BrowserPool
+from dola_gateway.store import TaskStore
+from dola_gateway.upstream_errors import (
     CONTENT_REJECTION_JA,
     DolaTemporarilyUnavailableError,
     ExplicitRestrictionError,
     PromptContentRejectedError,
-    VerificationRequiredError,
     classify_upstream_text,
 )
-from video_worker import _check_submit
 
 
 def make_pool(tmp_path, *accounts):
@@ -53,40 +50,6 @@ def make_pool(tmp_path, *accounts):
 )
 def test_upstream_classifier_is_conservative(message, kind):
     assert classify_upstream_text(message).kind == kind
-
-
-@pytest.mark.parametrize("status", [400, 429, 500, 503])
-def test_ambiguous_submit_http_status_is_temporary_not_risk_control(status):
-    with pytest.raises(DolaTemporarilyUnavailableError):
-        _check_submit({"status": status, "events": [], "errors": []})
-
-
-def test_submit_classifies_explicit_risk_and_verification_without_guessing():
-    with pytest.raises(ExplicitRestrictionError) as risk:
-        _check_submit({
-            "status": 429,
-            "events": [{"message": "710022002 too many requests"}],
-            "errors": [],
-        })
-    assert risk.value.kind == "risk_control"
-
-    with pytest.raises(VerificationRequiredError):
-        _check_submit({
-            "status": 403,
-            "events": [{"message": "710022004 captcha"}],
-            "errors": [],
-        })
-    with pytest.raises(VerificationRequiredError):
-        _check_submit({
-            "status": 200,
-            "events": [],
-            "errors": ["710022004 slide verification"],
-        })
-
-
-def test_submit_without_conversation_id_is_ambiguous_and_not_rotatable():
-    with pytest.raises(DolaTemporarilyUnavailableError):
-        _check_submit({"status": 200, "events": [], "errors": []})
 
 
 def test_restrictions_are_independent_persistent_and_ignore_legacy_timers(tmp_path):
@@ -146,9 +109,9 @@ def test_content_and_ambiguous_failures_never_restrict_or_rotate(monkeypatch, tm
 
     async def content_failure(account, *args, **kwargs):
         calls.append(account)
-        raise CreditError(f"Insufficient quota: {CONTENT_REJECTION_JA}")
+        raise RuntimeError(f"Insufficient quota: {CONTENT_REJECTION_JA}")
 
-    monkeypatch.setattr("browser_pool.generate_video", content_failure)
+    monkeypatch.setattr("dola_gateway.browser_pool.generate_video", content_failure)
     with pytest.raises(PromptContentRejectedError):
         asyncio.run(pool.generate_video("prompt"))
     assert calls == ["a"]
@@ -158,9 +121,9 @@ def test_content_and_ambiguous_failures_never_restrict_or_rotate(monkeypatch, tm
 
     async def ambiguous_failure(account, *args, **kwargs):
         calls.append(account)
-        raise CreditError("生成できません")
+        raise RuntimeError("生成できません")
 
-    monkeypatch.setattr("browser_pool.generate_video", ambiguous_failure)
+    monkeypatch.setattr("dola_gateway.browser_pool.generate_video", ambiguous_failure)
     with pytest.raises(DolaTemporarilyUnavailableError):
         asyncio.run(pool.generate_video("prompt"))
     assert calls == ["a"]
@@ -179,7 +142,7 @@ def test_normal_explicit_restriction_rotates_but_manual_retry_never_does(
             raise ExplicitRestrictionError("daily_limit", "Daily limit reached")
         return {"local_path": str(tmp_path / "ok.mp4"), "account": account}
 
-    monkeypatch.setattr("browser_pool.generate_video", first_restricted)
+    monkeypatch.setattr("dola_gateway.browser_pool.generate_video", first_restricted)
     result = asyncio.run(pool.generate_video("prompt"))
     assert result["account"] == "b"
     assert calls == ["a", "b"]
@@ -193,7 +156,7 @@ def test_normal_explicit_restriction_rotates_but_manual_retry_never_does(
         calls.append(account)
         raise ExplicitRestrictionError("daily_limit", "Daily limit remains")
 
-    monkeypatch.setattr("browser_pool.generate_video", retry_still_restricted)
+    monkeypatch.setattr("dola_gateway.browser_pool.generate_video", retry_still_restricted)
     with pytest.raises(ExplicitRestrictionError):
         asyncio.run(pool.generate_video("real prompt", retry_account="a"))
     assert calls == ["a"]
@@ -210,7 +173,7 @@ def test_manual_retry_success_clears_only_matching_media(monkeypatch, tmp_path):
     async def success(account, *args, **kwargs):
         return {"local_path": str(tmp_path / "ok.mp4"), "account": account}
 
-    monkeypatch.setattr("browser_pool.generate_video", success)
+    monkeypatch.setattr("dola_gateway.browser_pool.generate_video", success)
     asyncio.run(pool.generate_video("real prompt", retry_account="a"))
     account = pool.list_accounts()[0]
     assert account["video_restricted"] is False
@@ -228,7 +191,7 @@ def test_manual_image_retry_rejects_busy_race_without_waiting_or_contact(
         calls.append(args)
         raise AssertionError("Dola must not be contacted")
 
-    monkeypatch.setattr("browser_pool.generate_image_for_account", forbidden_contact)
+    monkeypatch.setattr("dola_gateway.browser_pool.generate_image_for_account", forbidden_contact)
 
     async def race():
         # Endpoint-time prevalidation succeeds, then another task takes the lock
@@ -252,8 +215,8 @@ def test_manual_image_retry_rejects_busy_race_without_waiting_or_contact(
 @pytest.mark.parametrize(
     "error",
     [
-        CreditError(f"Insufficient quota: {CONTENT_REJECTION_JA}"),
-        CreditError("生成できません"),
+        RuntimeError(f"Insufficient quota: {CONTENT_REJECTION_JA}"),
+        RuntimeError("生成できません"),
     ],
 )
 def test_manual_content_or_ambiguous_failure_preserves_restriction(
@@ -266,7 +229,7 @@ def test_manual_content_or_ambiguous_failure_preserves_restriction(
     async def fail(*args, **kwargs):
         raise error
 
-    monkeypatch.setattr("browser_pool.generate_video", fail)
+    monkeypatch.setattr("dola_gateway.browser_pool.generate_video", fail)
     with pytest.raises((PromptContentRejectedError, DolaTemporarilyUnavailableError)):
         asyncio.run(pool.generate_video("different real prompt", retry_account="a"))
     account = pool.list_accounts()[0]
@@ -299,8 +262,7 @@ def load_server(monkeypatch, tmp_path):
     monkeypatch.setenv("DOLA_PROXY", "")
     monkeypatch.setenv("DOLA_API_KEYS", "")
     monkeypatch.setenv("DOLA_ADMIN_KEY", "owner-secret")
-    import config
-    import server
+    from dola_gateway import config, server
     importlib.reload(config)
     return importlib.reload(server)
 
@@ -370,7 +332,13 @@ def test_existing_requests_without_retry_account_remain_compatible(monkeypatch, 
 
 
 def test_accounts_ui_pins_and_confirms_one_real_manual_retry():
-    html = (Path(__file__).resolve().parents[1] / "web" / "playground.html").read_text()
+    html = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "dola_gateway"
+        / "web"
+        / "playground.html"
+    ).read_text()
     posts = []
 
     async def check():

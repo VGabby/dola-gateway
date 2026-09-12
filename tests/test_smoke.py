@@ -29,7 +29,7 @@ def test_all_python_sources_compile():
 
 def test_config_defaults_to_local_bind(monkeypatch):
     monkeypatch.delenv("DOLA_HOST", raising=False)
-    source = (ROOT / "config.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "dola_gateway" / "config.py").read_text(encoding="utf-8")
     assert 'os.getenv("DOLA_HOST", "127.0.0.1")' in source
     assert 'os.getenv("DOLA_VIDEO_TIMEOUT", "900")' in source
 
@@ -41,14 +41,14 @@ def test_browser_override_exists_when_configured():
 
 
 def test_video_generation_waits_for_manual_verification():
-    source = (ROOT / "video_worker_ui.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "dola_gateway" / "video_worker_ui.py").read_text(encoding="utf-8")
     active_flow = source[source.index("async def generate_video(") :]
     assert "complete it manually to continue" in active_flow
     assert "await solve_slider" not in active_flow
 
 
 def test_video_default_duration_does_not_leave_menu_open():
-    source = (ROOT / "video_worker_ui.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "dola_gateway" / "video_worker_ui.py").read_text(encoding="utf-8")
     active_flow = source[source.index("async def generate_video(") :]
     assert 'if (await current.inner_text()).strip() != duration_label:' in active_flow
     assert 'page.get_by_role("menuitem", name=duration_label, exact=True)' in active_flow
@@ -56,7 +56,7 @@ def test_video_default_duration_does_not_leave_menu_open():
 
 
 def test_video_duration_clarification_fails_fast():
-    from video_worker_ui import VIDEO_NOT_STARTED_PATTERN, _submission_prompt
+    from dola_gateway.video_worker_ui import VIDEO_NOT_STARTED_PATTERN, _submission_prompt
 
     message = (
         "Video generation currently supports durations from 4 to 15 seconds. "
@@ -68,14 +68,14 @@ def test_video_duration_clarification_fails_fast():
     )
     assert _submission_prompt("a dragon flying", 30) == "a dragon flying"
 
-    source = (ROOT / "video_worker_ui.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "dola_gateway" / "video_worker_ui.py").read_text(encoding="utf-8")
     active_flow = source[source.index("async def generate_video(") :]
     assert "Duration selection did not stick" in active_flow
     assert "Failed to set requested duration" in active_flow
 
 
 def test_video_control_lookup_waits_for_delayed_visible_match():
-    from video_worker_ui import _click_first_visible
+    from dola_gateway.video_worker_ui import _click_first_visible
 
     class Candidate:
         clicked = False
@@ -137,8 +137,7 @@ def test_health_endpoint_works_without_accounts(monkeypatch, tmp_path):
     monkeypatch.setenv("DOLA_PROXY", "")
 
     import importlib
-    import config
-    import server
+    from dola_gateway import config, server
 
     importlib.reload(config)
     server = importlib.reload(server)

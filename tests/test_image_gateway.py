@@ -11,15 +11,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from browser_pool import BrowserPool
-from dola_client import DolaClient
-from image_worker import (
+from dola_gateway.browser_pool import BrowserPool
+from dola_gateway.image_worker import (
     build_cookie_header,
     localized_style_label,
     select_generated_image,
     select_generated_images,
 )
-from store import TaskStore
+from dola_gateway.store import TaskStore
 
 
 def test_cookie_header_is_deterministic_and_skips_empty_values():
@@ -29,20 +28,6 @@ def test_cookie_header_is_deterministic_and_skips_empty_values():
         {"name": "msToken", "value": "token"},
     ]
     assert build_cookie_header(cookies) == "msToken=token; sessionid=session"
-
-
-def test_existing_dola_image_payload_uses_image_ability():
-    client = DolaClient("sessionid=test")
-    body = client._build_image_body(
-        "smoke-test lighthouse", "16:9", "watercolor"
-    )
-    assert body["chat_ability"]["ability_type"] == 16
-    text = body["messages"][0]["content_block"][0]["content"]["text_block"]["text"]
-    assert "smoke-test lighthouse" in text
-    assert "16:9" in text
-    assert "watercolor" in text
-
-
 def test_current_ui_style_mapping_and_generated_image_selection():
     assert localized_style_label("watercolor") == "水彩"
     assert localized_style_label("minimal") is None
@@ -77,7 +62,11 @@ def test_generated_image_selection_returns_every_unique_full_size_result():
 
 def test_application_displays_every_generated_image_result():
     html = (
-        Path(__file__).resolve().parents[1] / "web" / "playground.html"
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "dola_gateway"
+        / "web"
+        / "playground.html"
     ).read_text(encoding="utf-8")
 
     assert "task.media_type==='image'" in html
@@ -120,7 +109,7 @@ def test_image_scheduler_waits_for_busy_account(monkeypatch, tmp_path):
                 await release_first.wait()
             return {"local_path": str(tmp_path / f"{prompt}.png"), "account": account}
 
-        monkeypatch.setattr("browser_pool.generate_image_for_account", fake_generate)
+        monkeypatch.setattr("dola_gateway.browser_pool.generate_image_for_account", fake_generate)
         first = asyncio.create_task(pool.generate_image("first"))
         await first_started.wait()
         second = asyncio.create_task(pool.generate_image("second"))
@@ -207,8 +196,7 @@ def _load_server(monkeypatch, tmp_path):
     monkeypatch.setenv("DOLA_API_KEYS", "")
     monkeypatch.setenv("DOLA_ADMIN_KEY", "")
 
-    import config
-    import server
+    from dola_gateway import config, server
 
     importlib.reload(config)
     return importlib.reload(server)
@@ -525,7 +513,13 @@ def test_playground_uses_opt_in_tab_scoped_key_storage(monkeypatch, tmp_path):
 
 
 def test_playground_requires_create_another_before_a_second_submission():
-    html = (Path(__file__).resolve().parents[1] / "web" / "playground.html").read_text()
+    html = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "dola_gateway"
+        / "web"
+        / "playground.html"
+    ).read_text()
     posts = []
 
     async def check():
@@ -694,7 +688,13 @@ def test_playground_requires_create_another_before_a_second_submission():
 
 
 def test_unified_owner_shell_authenticates_and_loads_admin_views():
-    html = (Path(__file__).resolve().parents[1] / "web" / "playground.html").read_text()
+    html = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "dola_gateway"
+        / "web"
+        / "playground.html"
+    ).read_text()
     authorized_requests = []
 
     async def check():

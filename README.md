@@ -23,14 +23,14 @@ or local application data in a distribution.
 
 ```bash
 # macOS arm64, on an Apple Silicon Mac
-.venv/bin/python packaging/desktop/build_runtime.py \
+.venv/bin/python tools/release/build_runtime.py \
   --target macos-arm64 --output dist/desktop-runtime/macos-arm64 --force --smoke
-.venv/bin/python packaging/desktop/build_desktop.py --target macos-arm64
+.venv/bin/python tools/release/build_installer.py --target macos-arm64
 
 # Windows x64, in PowerShell on an x64 Windows builder
-python packaging/desktop/build_runtime.py `
+python tools/release/build_runtime.py `
   --target windows-x64 --output dist/desktop-runtime/windows-x64 --force --smoke
-python packaging/desktop/build_desktop.py --target windows-x64
+python tools/release/build_installer.py --target windows-x64
 ```
 
 Distribute the matching DMG or NSIS installer from `dist/desktop-installers/`
@@ -45,7 +45,7 @@ outside the installed app. Updates are manual: quit the app, install the
 replacement, and reopen it; the state directory is retained. Developer builds
 are unsigned and not notarized, so they should be used only in trusted
 environments.
-See [packaging/README.md](packaging/README.md) for verification, platform status,
+See [tools/release/README.md](tools/release/README.md) for verification, platform status,
 state boundaries, and clean-machine acceptance testing.
 
 ---
@@ -56,9 +56,9 @@ state boundaries, and clean-machine acceptance testing.
    - `POST /v1/videos/generations`: Submit generation tasks with prompt, aspect ratio, duration (`10s`, `15s`, `30s`), and reference images.
    - `GET /v1/videos/<id>`: Poll task lifecycle (`queued` -> `processing` -> `completed` / `failed`).
    - High-speed MP4 streaming and static asset delivery.
-2. **Extended Duration & High-Definition Media Export**:
-   - Integrated browser automation profile for managing extended duration options.
-   - Direct original quality stream extraction and processing.
+2. **Extended Duration & Media Export**:
+   - Dola-only browser extension support for `10s`, `15s`, and `30s` UI choices.
+   - Generated media collection and local download handling.
 3. **Multi-Account Browser Pool**:
    - Manages multiple persistent browser profiles in `accounts/`.
    - Automatic concurrency management, mutual exclusion, and session rotation.
@@ -83,26 +83,20 @@ only the task.
 ```
 dola-image-gateway/
 ├── VERSION                # Single runtime and release version
+├── CHANGELOG.md           # Versioned GitHub release notes
 ├── pyproject.toml         # Project metadata and test configuration
-├── server.py              # FastAPI application, client API, admin API, and UI routes
-├── app_version.py         # Loads the canonical version
-├── browser_pool.py        # Account pool concurrency manager and task scheduler
-├── browser.py             # Playwright persistent context launcher
-├── image_worker.py        # Dola image automation and result collection
-├── video_worker_ui.py     # UI automation worker with verification handler
-├── video_worker.py        # Protocol worker and status polling
-├── store.py               # SQLite task persistence and API key storage
-├── upstream_errors.py     # Multilingual upstream outcome classifier
-├── dola_client.py         # API client communication module
-├── media.py               # Reference media processor
-├── config.py              # Configuration & environment variables
-├── add_account.py         # Automated account profile setup
-├── web/
-│   └── playground.html    # Unified Create, Library, Accounts, Activity, and Settings UI
-├── packaging/             # Self-contained desktop runtime and installer builders
+├── src/dola_gateway/
+│   ├── server.py          # FastAPI application, API, admin, and UI routes
+│   ├── browser_pool.py    # Account concurrency manager and scheduler
+│   ├── image_worker.py    # Dola image UI automation and result collection
+│   ├── video_worker_ui.py # Dola video UI automation and verification handling
+│   ├── video_protocol.py  # Active video result polling and download helpers
+│   ├── web/               # Unified local application
+│   └── extensions/dola30/ # Least-privilege Dola duration extension
+├── desktop/               # Tauri shell source and runtime placeholder
+├── tools/release/         # Reproducible desktop runtime and installer builders
 ├── tests/                 # Offline API, browser, release, and regression tests
-└── extensions/
-    └── dola30/            # Chromium extension profile
+└── .github/workflows/     # CI, dual-native build, and gated release publish
 ```
 
 ---
@@ -174,7 +168,7 @@ export DOLA_VIDEO_TIMEOUT=900
 ### 4. Start the server
 
 ```bash
-.venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8000
+.venv/bin/python -m uvicorn dola_gateway.server:app --host 127.0.0.1 --port 8000
 ```
 Open **http://127.0.0.1:8000/** to access the complete local application.
 

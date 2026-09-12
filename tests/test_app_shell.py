@@ -23,15 +23,14 @@ def _load_server(monkeypatch, tmp_path, *, admin_key="", api_keys=""):
     monkeypatch.setenv("DOLA_API_KEYS", api_keys)
     monkeypatch.setenv("DOLA_ADMIN_KEY", admin_key)
 
-    import config
-    import server
+    from dola_gateway import config, server
 
     importlib.reload(config)
     return importlib.reload(server)
 
 
 def test_app_version_has_one_file_source():
-    import app_version
+    from dola_gateway import app_version
 
     expected = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     assert expected

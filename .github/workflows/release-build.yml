@@ -1,0 +1,164 @@
+name: Build desktop release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64 DMG
+            target: macos-arm64
+            runner: macos-15
+          - name: Windows x64 NSIS
+            target: windows-x64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      DOLA_ADMIN_KEY: ""
+      DOLA_API_KEYS: ""
+      DOLA_ENV_FILE: ${{ runner.temp }}/dola-gateway-no-env
+      DOLA_PROXY: ""
+      DOLA_STATE_DIR: ${{ runner.temp }}/dola-gateway-state
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.1"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Rust 1.88
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+          rustc --version
+          cargo --version
+
+      - name: Install locked test environment
+        run: uv sync --frozen --group dev
+
+      - name: Validate source and tag parity
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            uv run --frozen python tools/release/check_release.py --tag "${GITHUB_REF_NAME}"
+          else
+            uv run --frozen python tools/release/check_release.py
+          fi
+
+      - name: Run offline release regression suite
+        run: >-
+          uv run --frozen pytest -q
+          tests/test_packaging.py
+          tests/test_desktop_packaging.py
+          tests/test_version_tooling.py
+          tests/test_release_manifest.py
+
+      - name: Build and smoke-test runtime
+        run: >-
+          uv run --frozen python tools/release/build_runtime.py
+          --target ${{ matrix.target }}
+          --output dist/desktop-runtime/${{ matrix.target }}
+          --force
+          --smoke
+
+      - name: Build and verify unsigned installer
+        run: >-
+          uv run --frozen python tools/release/build_installer.py
+          --target ${{ matrix.target }}
+
+      - name: Upload verified native build
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.target }}
+          path: |
+            dist/desktop-installers/${{ matrix.target }}/*.dmg
+            dist/desktop-installers/${{ matrix.target }}/*.exe
+            dist/desktop-installers/${{ matrix.target }}/*.sha256
+            dist/desktop-installers/${{ matrix.target }}/*.metadata.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  verify-release:
+    name: Verify complete dual-native release
+    needs: build-native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Download both native builds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: dist/native-builds
+
+      - name: Assemble and verify normalized release bundle
+        run: >-
+          python tools/release/create_manifest.py
+          --input dist/native-builds
+          --output dist/release
+          --expected-version "$(tr -d '\r\n' < VERSION)"
+
+      - name: Upload complete verified release
+        uses: actions/upload-artifact@v7
+        with:
+          name: verified-release
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    name: Publish stable GitHub release
+    needs: verify-release
+    if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    uses: ./.github/workflows/release-publish.yml
+    with:
+      tag: ${{ github.ref_name }}
+    permissions:
+      actions: read
+      contents: write

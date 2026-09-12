@@ -42,8 +42,7 @@ def _load_desktop(
     monkeypatch.setenv("DOLA_ADMIN_KEY", admin_key)
     monkeypatch.setenv("DOLA_PROXY", "")
 
-    import config
-    import server
+    from dola_gateway import config, server
 
     importlib.reload(config)
     return importlib.reload(server), state
@@ -268,16 +267,20 @@ def test_desktop_refuses_non_loopback_bind(monkeypatch, tmp_path):
     monkeypatch.setenv("DOLA_DESKTOP_TOKEN", "desktop-owner-token")
     monkeypatch.setenv("DOLA_HOST", "0.0.0.0")
 
-    import config
+    from dola_gateway import config
 
     with pytest.raises(ValueError, match="loopback"):
         importlib.reload(config)
 
 
 def test_desktop_ui_uses_launch_capability_without_persistent_browser_storage():
-    source = (Path(__file__).resolve().parents[1] / "web" / "playground.html").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "dola_gateway"
+        / "web"
+        / "playground.html"
+    ).read_text(encoding="utf-8")
     assert "desktop_token" in source
     assert "window.name='dola-desktop:'" in source
     assert "history.replaceState" in source

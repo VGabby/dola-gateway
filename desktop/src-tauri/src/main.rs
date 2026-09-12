@@ -152,7 +152,7 @@ fn spawn_backend(state: &BackendState) -> Result<Child, String> {
     command
         .current_dir(&app_dir)
         .arg("-m")
-        .arg("desktop_entry")
+        .arg("dola_gateway.desktop_entry")
         .env("PYTHONPATH", &app_dir)
         .env("PYTHONUTF8", "1")
         .env("PYTHONDONTWRITEBYTECODE", "1")

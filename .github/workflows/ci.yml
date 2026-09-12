@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Offline tests and release validation
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    env:
+      DOLA_ADMIN_KEY: ""
+      DOLA_API_KEYS: ""
+      DOLA_ENV_FILE: ${{ runner.temp }}/dola-gateway-no-env
+      DOLA_PROXY: ""
+      DOLA_STATE_DIR: ${{ runner.temp }}/dola-gateway-state
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.1"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Rust 1.88
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Install locked test environment
+        run: uv sync --frozen --group dev
+
+      - name: Install test-only Chromium
+        run: uv run --frozen patchright install chromium
+
+      - name: Validate release inputs
+        run: uv run --frozen python tools/release/check_release.py
+
+      - name: Run full offline Python suite
+        run: uv run --frozen pytest -q
+
+      - name: Validate locked Tauri CLI
+        working-directory: desktop
+        run: |
+          npm ci --ignore-scripts
+          npm run tauri -- --version
+
+      - name: Run Tauri shell tests
+        working-directory: desktop/src-tauri
+        env:
+          RUSTUP_TOOLCHAIN: 1.88.0
+        run: cargo test --locked

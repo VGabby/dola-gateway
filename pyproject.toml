@@ -19,29 +19,34 @@ dependencies = [
   "uvicorn[standard]",
 ]
 
-[tool.setuptools]
-py-modules = [
-  "add_account",
-  "app_version",
-  "browser",
-  "browser_pool",
-  "config",
-  "dola_client",
-  "gap",
-  "image_worker",
-  "media",
-  "server",
-  "store",
-  "upstream_errors",
-  "video_probe",
-  "video_worker",
-  "video_worker_ui",
+[dependency-groups]
+dev = [
+  "httpx2",
+  "pytest",
+  "pytest-socket",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dola_gateway = [
+  "VERSION",
+  "web/*.html",
+  "extensions/dola30/*.js",
+  "extensions/dola30/*.json",
+  "extensions/dola30/*.md",
 ]
 
 [tool.setuptools.dynamic]
-version = {attr = "app_version.APP_VERSION"}
+version = {file = ["VERSION"]}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
-addopts = "-ra"
+pythonpath = ["src"]
+addopts = "-ra --disable-socket --allow-unix-socket --allow-hosts=127.0.0.1,localhost"
+filterwarnings = [
+  "error",
+  # Starlette 1.6 still references AnyIO's deprecated compatibility alias.
+  "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated.*:DeprecationWarning:starlette\\.testclient",
+]

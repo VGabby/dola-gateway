@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,8 +11,9 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BUILDER_PATH = PROJECT_ROOT / "packaging" / "desktop" / "build_runtime.py"
-WINDOWS_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "windows-release.yml"
+BUILDER_PATH = PROJECT_ROOT / "tools" / "release" / "build_runtime.py"
+RELEASE_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "release-build.yml"
+PUBLISH_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "release-publish.yml"
 
 
 def load_builder():
@@ -76,6 +78,11 @@ def test_windows_installer_is_per_user_and_offline_capable():
         "silent": True,
     }
     assert windows["allowDowngrades"] is False
+    assert config["bundle"]["resources"] == {
+        "../runtime-placeholder/": "runtime/"
+    }
+    placeholder = PROJECT_ROOT / "desktop" / "runtime-placeholder"
+    assert (placeholder / "runtime-manifest.json").is_file()
 
 
 def test_desktop_icon_set_is_declared_and_contains_native_formats():
@@ -98,23 +105,32 @@ def test_desktop_icon_set_is_declared_and_contains_native_formats():
     assert (icon_root / "icons" / "icon.ico").read_bytes()[:4] == b"\x00\x00\x01\x00"
 
 
-def test_windows_release_workflow_uses_native_verified_build_without_secrets():
-    workflow = WINDOWS_WORKFLOW.read_text(encoding="utf-8")
-    assert "runs-on: windows-latest" in workflow
+def test_release_workflows_build_both_native_targets_before_stable_publish():
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    assert "runner: windows-2025" in workflow
+    assert "runner: macos-15" in workflow
+    assert "target: windows-x64" in workflow
+    assert "target: macos-arm64" in workflow
     assert "permissions:\n  contents: read" in workflow
-    assert "packaging/check_release.py" in workflow
-    assert "packaging/desktop/build_runtime.py" in workflow
-    assert "--target windows-x64" in workflow
+    assert "tools/release/check_release.py" in workflow
+    assert "tools/release/build_runtime.py" in workflow
+    assert "--target ${{ matrix.target }}" in workflow
     assert "--smoke" in workflow
-    assert "packaging/desktop/build_desktop.py --target windows-x64" in workflow
+    assert "tools/release/build_installer.py" in workflow
+    assert "tools/release/create_manifest.py" in workflow
+    assert "needs: build-native" in workflow
+    assert "name: verified-release" in workflow
+    assert "!contains(github.ref_name, '-')" in workflow
     assert "actions/upload-artifact@v7" in workflow
-    assert "dist/desktop-installers/windows-x64/*.exe" in workflow
-    assert "dist/desktop-installers/windows-x64/*.sha256" in workflow
-    assert "build-metadata.json" in workflow
     assert "secrets." not in workflow
-    assert "DOLA_API_KEYS" not in workflow
-    assert "DOLA_ADMIN_KEY" not in workflow
-    assert "gh release" not in workflow
+    assert 'DOLA_API_KEYS: ""' in workflow
+    assert 'DOLA_ADMIN_KEY: ""' in workflow
+    assert "workflow_call:" in publish
+    assert "--verify-only dist/release" in publish
+    assert "gh release create" in publish
+    assert "--verify-tag" in publish
+    assert not (PROJECT_ROOT / ".github" / "workflows" / "windows-release.yml").exists()
 
 
 def test_offline_fixture_build_has_verified_contained_manifest(tmp_path):
@@ -126,17 +142,50 @@ def test_offline_fixture_build_has_verified_contained_manifest(tmp_path):
     assert manifest["fixture"] is True
     assert manifest["target"] == "macos-arm64"
     assert manifest["app"]["directory"] == "app"
-    assert manifest["app"]["entrypoint"] == "server:app"
+    assert manifest["app"]["entrypoint"] == "dola_gateway.server:app"
     assert manifest["python"]["interpreter"].startswith("python/")
     assert manifest["patchright"]["browser_executable"].startswith("browsers/chromium-1234/")
     assert (output / manifest["python"]["interpreter"]).is_file()
     assert (output / manifest["patchright"]["browser_executable"]).is_file()
-    assert (output / "app/server.py").is_file()
+    assert (output / "app/dola_gateway/server.py").is_file()
+    assert (output / "app/dola_gateway/web/playground.html").is_file()
     assert not (output / ".build").exists()
     assert not list(output.rglob("__pycache__"))
     assert not list(output.rglob("*.pyc"))
     with pytest.raises(builder.BuildError, match="not distributable"):
         builder.verify_runtime(output)
+
+    state_dir = tmp_path / "fixture-state"
+    env = os.environ.copy()
+    env.update({
+        "PYTHONPATH": str(output / "app"),
+        "DOLA_STATE_DIR": str(state_dir),
+        "DOLA_DESKTOP_TOKEN": "fixture-desktop-token",
+        "DOLA_ENV_FILE": str(tmp_path / "missing.env"),
+        "DOLA_API_KEYS": "",
+        "DOLA_ADMIN_KEY": "",
+        "DOLA_PROXY": "",
+    })
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; "
+                "import dola_gateway; "
+                "from dola_gateway import server; "
+                f"assert Path(dola_gateway.__file__).resolve().is_relative_to(Path({str(output / 'app')!r})); "
+                "assert server.app.title == 'Dola Gateway'; "
+                "server.store.close(); server.pool.close()"
+            ),
+        ],
+        cwd=output / "app",
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stdout + imported.stderr
 
 
 def test_fixture_cli_is_fast_offline_and_verify_only_works(tmp_path):
@@ -197,7 +246,7 @@ def test_runtime_verifier_rejects_private_state_credentials_and_escaping_links(t
 def test_manifest_tree_hashes_detect_runtime_tampering(tmp_path):
     builder = load_builder()
     output = builder.build_runtime("macos-arm64", tmp_path / "runtime", fixture=True)
-    (output / "app/server.py").write_text("# tampered\n", encoding="utf-8")
+    (output / "app/dola_gateway/server.py").write_text("# tampered\n", encoding="utf-8")
     with pytest.raises(builder.BuildError, match="app_tree_sha256"):
         builder.verify_runtime(output, allow_fixture=True)
 
@@ -209,7 +258,7 @@ def test_installer_builder_rejects_fixture_runtime_before_packaging(tmp_path):
     installer = subprocess.run(
         [
             sys.executable,
-            str(PROJECT_ROOT / "packaging" / "desktop" / "build_desktop.py"),
+            str(PROJECT_ROOT / "tools" / "release" / "build_installer.py"),
             "--target",
             target,
             "--runtime",

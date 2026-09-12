@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Dola Duration Extension",
+  "version": "1.0.0",
+  "description": "Enables Dola video duration choices used by the desktop application.",
+  "permissions": [
+    "debugger",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://*.dola.com/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Dola durations 10s / 15s / 30s"
+  }
+}
