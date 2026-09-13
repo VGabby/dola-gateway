@@ -2,6 +2,11 @@ name: Build desktop release
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_tag:
+        description: "Existing vVERSION tag to publish after this build (optional)"
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -151,12 +156,12 @@ jobs:
           compression-level: 0
 
   publish:
-    name: Publish stable GitHub release
+    name: Publish GitHub release
     needs: verify-release
-    if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish_tag != '')
     uses: ./.github/workflows/release-publish.yml
     with:
-      tag: ${{ github.ref_name }}
+      tag: ${{ inputs.publish_tag || github.ref_name }}
     permissions:
       actions: read
       contents: write

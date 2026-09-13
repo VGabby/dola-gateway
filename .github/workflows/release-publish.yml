@@ -29,13 +29,13 @@ jobs:
           name: verified-release
           path: dist/release
 
-      - name: Validate stable tag and complete bundle
+      - name: Validate tag and complete bundle
         env:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           version="${RELEASE_TAG#v}"
-          if [[ "${RELEASE_TAG}" != "v${version}" || "${version}" == *-* ]]; then
-            echo "Only stable vVERSION tags may be published" >&2
+          if [[ "${RELEASE_TAG}" != "v${version}" ]]; then
+            echo "Only vVERSION tags may be published" >&2
             exit 1
           fi
           python tools/release/check_release.py --tag "${RELEASE_TAG}"
@@ -59,10 +59,17 @@ jobs:
           )
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
-            gh release edit "${RELEASE_TAG}" --notes-file dist/release/RELEASE_NOTES.md
+            if [[ "${RELEASE_TAG}" != *-* ]]; then
+              gh release edit "${RELEASE_TAG}" --notes-file dist/release/RELEASE_NOTES.md
+            fi
           else
+            release_flags=()
+            if [[ "${RELEASE_TAG}" == *-* ]]; then
+              release_flags+=(--prerelease)
+            fi
             gh release create "${RELEASE_TAG}" "${files[@]}" \
               --title "Dola Gateway ${RELEASE_TAG}" \
               --notes-file dist/release/RELEASE_NOTES.md \
+              "${release_flags[@]}" \
               --verify-tag
           fi
