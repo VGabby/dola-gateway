@@ -121,6 +121,7 @@ def test_release_workflows_build_both_native_targets_before_stable_publish():
     assert "tools/release/create_manifest.py" in workflow
     assert "Run full offline regression suite" in workflow
     assert "uv run --frozen pytest -q" in workflow
+    assert "uv run --frozen patchright install chromium" in workflow
     assert "tests/test_packaging.py" not in workflow
     assert "needs: build-native" in workflow
     assert "name: verified-release" in workflow

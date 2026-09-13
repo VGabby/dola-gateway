@@ -74,6 +74,9 @@ jobs:
       - name: Install locked test environment
         run: uv sync --frozen --group dev
 
+      - name: Install Patchright test browser
+        run: uv run --frozen patchright install chromium
+
       - name: Validate source and tag parity
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then

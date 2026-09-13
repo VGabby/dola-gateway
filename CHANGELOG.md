@@ -4,6 +4,10 @@ All notable changes to Dola Gateway are documented here.
 
 ## [Unreleased]
 
+## [0.2.3-rc.2] - 2026-09-13
+
+- Installed Patchright's pinned test browser in native release jobs so clean GitHub runners can complete the offline UI suite before packaging.
+
 ## [0.2.3-rc.1] - 2026-09-13
 
 - Kept Tauri's internal `tauri.localhost` startup URL inside the desktop webview instead of opening it in the system browser.
