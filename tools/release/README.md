@@ -4,8 +4,9 @@ Recipients receive a native installer, never the repository, a virtual
 environment, browser profiles, or a state backup. The installer includes the
 thin Tauri shell, the allowlisted Python application, a pinned standalone
 CPython runtime, locked binary dependencies, and Patchright's matching full
-Chromium build. The Windows NSIS path also embeds the offline WebView2 installer
-instead of fetching it on the recipient's machine.
+Chromium build. The Windows NSIS installer uses Tauri's downloaded WebView2
+bootstrapper: Windows needs network access during installation only if WebView2
+is not already installed. The separate Chromium automation browser is still bundled.
 
 ## Supported release targets
 
@@ -55,10 +56,10 @@ dependent job then requires exactly one DMG and one EXE at the same version,
 recomputes both hashes, and creates `release-manifest.json` plus combined
 `SHA256SUMS`. The complete bundle is retained as a 14-day workflow artifact.
 
-Stable tags call `.github/workflows/release-publish.yml` only after that combined
-gate passes. Prerelease/RC tags build and retain both verified intermediate
-artifacts but never publish a GitHub Release. A portable Windows build is not
-part of the supported release surface.
+Version tags call `.github/workflows/release-publish.yml` only after that combined
+gate passes, and RC tags are marked as prereleases. A manual run can publish an
+existing tag by supplying `publish_tag`. A portable Windows build is not part
+of the supported release surface.
 
 `build_runtime.py` permits a tiny `--fixture` tree only for offline tests.
 `build_installer.py` always rejects fixture runtimes. The installer builder stages
@@ -106,7 +107,9 @@ On a clean machine with no Python, Node, Rust, or Chrome installed:
 
 1. Verify the installer checksum and install for the current user.
 2. Start the app twice; confirm the second launch focuses the existing window.
-3. Confirm the startup view reaches the app with no downloads or terminal.
+3. Confirm the startup view reaches the app with no terminal. On Windows without
+   WebView2, allow its installer-time download; if installing offline, provision
+   WebView2 first.
 4. Add a fresh account and complete login in the visible bundled Chromium.
 5. Restart the app and confirm account metadata and generation history persist.
 6. Confirm a bad Host/Origin request is rejected and media requires auth.

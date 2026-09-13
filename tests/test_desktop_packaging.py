@@ -65,7 +65,7 @@ def test_windows_browser_version_check_does_not_launch_the_gui(monkeypatch, tmp_
     )
 
 
-def test_windows_installer_is_per_user_and_offline_capable():
+def test_windows_installer_is_per_user_and_downloads_webview_if_missing():
     config = json.loads(
         (PROJECT_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(
             encoding="utf-8"
@@ -74,7 +74,7 @@ def test_windows_installer_is_per_user_and_offline_capable():
     windows = config["bundle"]["windows"]
     assert windows["nsis"]["installMode"] == "currentUser"
     assert windows["webviewInstallMode"] == {
-        "type": "offlineInstaller",
+        "type": "downloadBootstrapper",
         "silent": True,
     }
     assert windows["allowDowngrades"] is False

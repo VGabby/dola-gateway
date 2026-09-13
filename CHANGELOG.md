@@ -4,6 +4,10 @@ All notable changes to Dola Gateway are documented here.
 
 ## [Unreleased]
 
+## [0.2.3-rc.3] - 2026-09-13
+
+- Reduced the Windows installer by switching WebView2 from an embedded offline installer to Tauri's downloaded bootstrapper; Windows downloads WebView2 during installation only when it is missing. The separate Chromium bundle for Dola automation remains included.
+
 ## [0.2.3-rc.2] - 2026-09-13
 
 - Installed Patchright's pinned test browser in native release jobs so clean GitHub runners can complete the offline UI suite before packaging.
