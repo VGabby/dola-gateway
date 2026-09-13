@@ -105,7 +105,7 @@ def test_desktop_icon_set_is_declared_and_contains_native_formats():
     assert (icon_root / "icons" / "icon.ico").read_bytes()[:4] == b"\x00\x00\x01\x00"
 
 
-def test_release_workflows_build_both_native_targets_before_stable_publish():
+def test_release_workflows_build_both_native_targets_before_publish():
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
     publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
     assert "runner: windows-2025" in workflow
@@ -125,7 +125,8 @@ def test_release_workflows_build_both_native_targets_before_stable_publish():
     assert "tests/test_packaging.py" not in workflow
     assert "needs: build-native" in workflow
     assert "name: verified-release" in workflow
-    assert "!contains(github.ref_name, '-')" in workflow
+    assert "inputs.publish_tag != ''" in workflow
+    assert "tag: ${{ inputs.publish_tag || github.ref_name }}" in workflow
     assert "actions/upload-artifact@v7" in workflow
     assert "secrets." not in workflow
     assert 'DOLA_API_KEYS: ""' in workflow
@@ -133,6 +134,8 @@ def test_release_workflows_build_both_native_targets_before_stable_publish():
     assert "workflow_call:" in publish
     assert "--verify-only dist/release" in publish
     assert "gh release create" in publish
+    assert "gh release upload" in publish
+    assert "--prerelease" in publish
     assert "--verify-tag" in publish
     assert not (PROJECT_ROOT / ".github" / "workflows" / "windows-release.yml").exists()
 
