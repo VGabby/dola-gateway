@@ -128,8 +128,10 @@ VIDEO_VERIFICATION_TIMEOUT = int(os.getenv("DOLA_VIDEO_VERIFICATION_TIMEOUT", "1
 
 # Run browser in headless mode (login always runs with head)
 HEADLESS = os.getenv("DOLA_HEADLESS", "1") == "1"
-# Image generation may run headed so a human can complete Dola verification.
-IMAGE_HEADLESS = os.getenv("DOLA_IMAGE_HEADLESS", "1" if HEADLESS else "0") == "1"
+# Image generation runs headed by default so a human can complete Dola
+# verification in every deployment mode. Set the image-specific override to 1
+# only when an unattended environment explicitly accepts verification failures.
+IMAGE_HEADLESS = os.getenv("DOLA_IMAGE_HEADLESS", "0") == "1"
 
 # Base public URL for returning static video links
 PUBLIC_BASE = os.getenv("DOLA_PUBLIC_BASE", f"http://127.0.0.1:{PORT}")

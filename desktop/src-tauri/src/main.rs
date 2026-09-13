@@ -430,6 +430,14 @@ fn create_recovery_report(state: &BackendState) -> Result<PathBuf, String> {
     Ok(destination)
 }
 
+fn is_internal_navigation(url: &tauri::Url, backend_port: u16) -> bool {
+    (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+        || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
+        || (url.scheme() == "http"
+            && url.host_str() == Some("127.0.0.1")
+            && url.port() == Some(backend_port))
+}
+
 fn build_window(app: &tauri::App, state: Arc<BackendState>) -> tauri::Result<WebviewWindow> {
     let navigation_state = Arc::clone(&state);
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -450,18 +458,14 @@ fn build_window(app: &tauri::App, state: Arc<BackendState>) -> tauri::Result<Web
                 }
                 return false;
             }
-            if url.scheme() == "http"
-                && matches!(url.host_str(), Some("127.0.0.1"))
-                && url.port() == Some(navigation_state.port)
-            {
+            if is_internal_navigation(url, navigation_state.port) {
                 return true;
             }
             if matches!(url.scheme(), "http" | "https") {
                 let _ = open::that_detached(url.as_str());
                 return false;
             }
-            (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
-                || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
+            false
         })
         .build()
 }
@@ -546,5 +550,32 @@ mod tests {
         std::env::set_var("DOLA_DESKTOP_API_PORT", "0");
         assert!(choose_port().is_err());
         std::env::remove_var("DOLA_DESKTOP_API_PORT");
+    }
+
+    #[test]
+    fn internal_startup_and_backend_urls_stay_in_the_webview() {
+        let backend_port = 18765;
+        for raw in [
+            "tauri://localhost/index.html",
+            "http://tauri.localhost/index.html",
+            "http://127.0.0.1:18765/",
+        ] {
+            let url: tauri::Url = raw.parse().expect("valid internal URL");
+            assert!(is_internal_navigation(&url, backend_port), "{raw}");
+        }
+    }
+
+    #[test]
+    fn foreign_and_wrong_port_urls_are_not_internal() {
+        let backend_port = 18765;
+        for raw in [
+            "https://example.com/",
+            "http://localhost:18765/",
+            "http://127.0.0.1:18766/",
+            "http://tauri.localhost.example/index.html",
+        ] {
+            let url: tauri::Url = raw.parse().expect("valid external URL");
+            assert!(!is_internal_navigation(&url, backend_port), "{raw}");
+        }
     }
 }

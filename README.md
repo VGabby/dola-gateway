@@ -163,6 +163,10 @@ export DOLA_MAX_CONCURRENCY=3
 
 # Allow slow Dola video renders to finish (seconds)
 export DOLA_VIDEO_TIMEOUT=900
+
+# Image automation is visible by default so verification can be completed.
+# Set this to 1 only for unattended runs that accept verification failures.
+export DOLA_IMAGE_HEADLESS=0
 ```
 
 ### 4. Start the server

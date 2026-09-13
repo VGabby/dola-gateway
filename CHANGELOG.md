@@ -4,6 +4,11 @@ All notable changes to Dola Gateway are documented here.
 
 ## [Unreleased]
 
+## [0.2.3-rc.1] - 2026-09-13
+
+- Kept Tauri's internal `tauri.localhost` startup URL inside the desktop webview instead of opening it in the system browser.
+- Made image automation headed by default in every mode so users can complete Dola verification, while retaining `DOLA_IMAGE_HEADLESS=1` as an explicit override.
+
 ## [0.2.2] - 2026-09-12
 
 - Packaged the Python runtime under `dola_gateway` and removed obsolete protocol paths.
